@@ -1,6 +1,6 @@
 //
-// Copyright (C) 2014 LunarG, Inc.
-// Copyright (C) 2015-2018 Google, Inc.
+// Copyright (C) 2002-2005  3Dlabs Inc. Ltd.
+// Copyright (C) 2013 LunarG, Inc.
 //
 // All rights reserved.
 //
@@ -32,30 +32,87 @@
 // LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
 // ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
+//
 
-#pragma once
-
-#if defined(_MSC_VER) && _MSC_VER >= 1900
-    #pragma warning(disable : 4464) // relative include path contains '..'
-#endif
-
-#include "SpvTools.h"
-#include "glslang/Include/intermediate.h"
-
-#include <string>
-#include <vector>
-
-#include "Logger.h"
+#include "../Include/intermediate.h"
+#include "RemoveTree.h"
 
 namespace glslang {
 
-void GetSpirvVersion(std::string&);
-int GetSpirvGeneratorVersion();
-void GlslangToSpv(const glslang::TIntermediate& intermediate, std::vector<unsigned int>& spirv,
-                  SpvOptions* options = nullptr);
-void GlslangToSpv(const glslang::TIntermediate& intermediate, std::vector<unsigned int>& spirv,
-                  spv::SpvBuildLogger* logger, SpvOptions* options = nullptr);
-void OutputSpvBin(const std::vector<unsigned int>& spirv, const char* baseName);
-void OutputSpvHex(const std::vector<unsigned int>& spirv, const char* baseName, const char* varName);
+//
+// Code to recursively delete the intermediate tree.
+//
+struct TRemoveTraverser : TIntermTraverser {
+    TRemoveTraverser() : TIntermTraverser(false, false, true, false) {}
 
+    virtual void visitSymbol(TIntermSymbol* node)
+    {
+        delete node;
+    }
+
+    virtual bool visitBinary(TVisit /* visit*/ , TIntermBinary* node)
+    {
+        delete node;
+
+        return true;
+    }
+
+    virtual bool visitUnary(TVisit /* visit */, TIntermUnary* node)
+    {
+        delete node;
+
+        return true;
+    }
+
+    virtual bool visitAggregate(TVisit /* visit*/ , TIntermAggregate* node)
+    {
+        delete node;
+
+        return true;
+    }
+
+    virtual bool visitSelection(TVisit /* visit*/ , TIntermSelection* node)
+    {
+        delete node;
+
+        return true;
+    }
+
+    virtual bool visitSwitch(TVisit /* visit*/ , TIntermSwitch* node)
+    {
+        delete node;
+
+        return true;
+    }
+
+    virtual void visitConstantUnion(TIntermConstantUnion* node)
+    {
+        delete node;
+    }
+
+    virtual bool visitLoop(TVisit /* visit*/ , TIntermLoop* node)
+    {
+        delete node;
+
+        return true;
+    }
+
+    virtual bool visitBranch(TVisit /* visit*/ , TIntermBranch* node)
+    {
+        delete node;
+
+        return true;
+    }
+};
+
+//
+// Entry point.
+//
+void RemoveAllTreeNodes(TIntermNode* root)
+{
+    TRemoveTraverser it;
+
+    root->traverse(&it);
 }
+
+} // end namespace glslang

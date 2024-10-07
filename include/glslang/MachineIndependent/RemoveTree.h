@@ -1,6 +1,5 @@
 //
-// Copyright (C) 2016 Google, Inc.
-//
+// Copyright (C) 2002-2005  3Dlabs Inc. Ltd.
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
@@ -15,7 +14,7 @@
 //    disclaimer in the documentation and/or other materials provided
 //    with the distribution.
 //
-//    Neither the name of Google Inc. nor the names of its
+//    Neither the name of 3Dlabs Inc. Ltd. nor the names of its
 //    contributors may be used to endorse or promote products derived
 //    from this software without specific prior written permission.
 //
@@ -31,53 +30,12 @@
 // LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
 // ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
+//
 
-#ifndef GLSLANG_SPIRV_LOGGER_H
-#define GLSLANG_SPIRV_LOGGER_H
+#pragma once
 
-#include <string>
-#include <vector>
+namespace glslang {
 
-namespace spv {
+void RemoveAllTreeNodes(TIntermNode*);
 
-// A class for holding all SPIR-V build status messages, including
-// missing/TBD functionalities, warnings, and errors.
-class SpvBuildLogger {
-public:
-    SpvBuildLogger() {}
-
-#ifdef GLSLANG_WEB
-    void tbdFunctionality(const std::string& f) { }
-    void missingFunctionality(const std::string& f) { }
-    void warning(const std::string& w) { }
-    void error(const std::string& e) { errors.push_back(e); }
-    std::string getAllMessages() { return ""; }
-#else
-
-    // Registers a TBD functionality.
-    void tbdFunctionality(const std::string& f);
-    // Registers a missing functionality.
-    void missingFunctionality(const std::string& f);
-
-    // Logs a warning.
-    void warning(const std::string& w) { warnings.push_back(w); }
-    // Logs an error.
-    void error(const std::string& e) { errors.push_back(e); }
-
-    // Returns all messages accumulated in the order of:
-    // TBD functionalities, missing functionalities, warnings, errors.
-    std::string getAllMessages() const;
-#endif
-
-private:
-    SpvBuildLogger(const SpvBuildLogger&);
-
-    std::vector<std::string> tbdFeatures;
-    std::vector<std::string> missingFeatures;
-    std::vector<std::string> warnings;
-    std::vector<std::string> errors;
-};
-
-} // end spv namespace
-
-#endif // GLSLANG_SPIRV_LOGGER_H
+} // end namespace glslang
