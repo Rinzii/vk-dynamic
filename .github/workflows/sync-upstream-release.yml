@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout (default branch)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -27,13 +27,25 @@ jobs:
         run: |
           git fetch --tags --force --prune origin +refs/heads/*:refs/remotes/origin/*
 
-      - name: Get last local release from tags
+      - name: Get last local release tag (vVK-GL)
         id: local
         run: |
           last_tag=$(git tag -l 'v*' --sort=-v:refname | head -n 1 || true)
           echo "last_tag=$last_tag" >> "$GITHUB_OUTPUT"
 
-      - name: Get latest upstream versions
+          last_vk=""
+          last_gl=""
+          if [ -n "$last_tag" ]; then
+            if echo "$last_tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-[0-9]+\.[0-9]+\.[0-9]+$'; then
+              last_vk="$(echo "$last_tag" | sed -E 's/^v([0-9]+\.[0-9]+\.[0-9]+)-([0-9]+\.[0-9]+\.[0-9]+)$/\1/')"
+              last_gl="$(echo "$last_tag" | sed -E 's/^v([0-9]+\.[0-9]+\.[0-9]+)-([0-9]+\.[0-9]+\.[0-9]+)$/\2/')"
+            fi
+          fi
+
+          echo "last_vk=$last_vk" >> "$GITHUB_OUTPUT"
+          echo "last_gl=$last_gl" >> "$GITHUB_OUTPUT"
+
+      - name: Get latest upstream versions (release list then tags fallback)
         id: upstream
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -63,7 +75,6 @@ jobs:
 
           vk_ver="${vk_tag#v}"
           gl_ver="${gl_tag#v}"
-
           release_ref="v${vk_ver}-${gl_ver}"
 
           echo "vk_tag=$vk_tag" >> "$GITHUB_OUTPUT"
@@ -72,24 +83,62 @@ jobs:
           echo "gl_ver=$gl_ver" >> "$GITHUB_OUTPUT"
           echo "release_ref=$release_ref" >> "$GITHUB_OUTPUT"
 
-      - name: Decide whether update is needed
-        id: decide
+      - name: Use old component version if unchanged
+        id: plan
         run: |
-          update=false
-          if [ -z "${{ steps.local.outputs.last_tag }}" ]; then
-            update=true
-          elif [ "${{ steps.upstream.outputs.release_ref }}" != "${{ steps.local.outputs.last_tag }}" ]; then
-            update=true
-          fi
-          echo "update=$update" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
 
-      - name: Stop if no update is needed
-        if: steps.decide.outputs.update != 'true'
+          last_vk="${{ steps.local.outputs.last_vk }}"
+          last_gl="${{ steps.local.outputs.last_gl }}"
+
+          up_vk="${{ steps.upstream.outputs.vk_ver }}"
+          up_gl="${{ steps.upstream.outputs.gl_ver }}"
+
+          use_vk="$up_vk"
+          use_gl="$up_gl"
+
+          if [ -n "$last_vk" ] && [ "$up_vk" = "$last_vk" ]; then
+            use_vk="$last_vk"
+          fi
+          if [ -n "$last_gl" ] && [ "$up_gl" = "$last_gl" ]; then
+            use_gl="$last_gl"
+          fi
+
+          release_ref="v${use_vk}-${use_gl}"
+
+          echo "use_vk=$use_vk" >> "$GITHUB_OUTPUT"
+          echo "use_gl=$use_gl" >> "$GITHUB_OUTPUT"
+          echo "release_ref=$release_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Stop if release branch already exists
+        id: branchcheck
         run: |
-          echo No upstream version updates detected
+          set -euo pipefail
+          release_ref="${{ steps.plan.outputs.release_ref }}"
+
+          if git ls-remote --heads origin "$release_ref" | grep -q .; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Stop if nothing to do
+        if: steps.branchcheck.outputs.exists == 'true'
+        run: |
+          echo Release branch already exists, doing nothing
+
+      - name: Checkout base for sync (last tag if present)
+        if: steps.branchcheck.outputs.exists != 'true'
+        run: |
+          set -euo pipefail
+          if [ -n "${{ steps.local.outputs.last_tag }}" ]; then
+            git checkout -B sync-work "${{ steps.local.outputs.last_tag }}"
+          else
+            git checkout -B sync-work
+          fi
 
       - name: Vendor Vulkan-Headers include/vulkan and include/vk_video only
-        if: steps.decide.outputs.update == 'true'
+        if: steps.branchcheck.outputs.exists != 'true'
         run: |
           set -euo pipefail
 
@@ -106,26 +155,14 @@ jobs:
             exit 1
           fi
 
-          if [ ! -d "$src_dir/include/vulkan" ]; then
-            echo Expected include/vulkan not found in Vulkan-Headers tarball
-            exit 1
-          fi
+          rm -rf include/vulkan include/vk_video
+          mkdir -p include/vulkan include/vk_video
 
-          if [ ! -d "$src_dir/include/vk_video" ]; then
-            echo Expected include/vk_video not found in Vulkan-Headers tarball
-            exit 1
-          fi
-
-          rm -rf include/vulkan
-          mkdir -p include/vulkan
           rsync -a --delete "$src_dir/include/vulkan/" "include/vulkan/"
-
-          rm -rf include/vk_video
-          mkdir -p include/vk_video
           rsync -a --delete "$src_dir/include/vk_video/" "include/vk_video/"
 
-      - name: Vendor selected glslang glslang subtree items only
-        if: steps.decide.outputs.update == 'true'
+      - name: Vendor selected glslang subtree items only
+        if: steps.branchcheck.outputs.exists != 'true'
         run: |
           set -euo pipefail
 
@@ -179,14 +216,14 @@ jobs:
           )
 
           for c in "${candidates[@]}"; do
-            if [ -n "$c" ] && [ -d "$c" ] && is_base_ok "$c"; then
+            if [ -d "$c" ] && is_base_ok "$c"; then
               base="$c"
               break
             fi
           done
 
           if [ -z "$base" ]; then
-            found_ci="$(find "$src_dir" -maxdepth 4 -type d -name CInterface | head -n 1 || true)"
+            found_ci="$(find "$src_dir" -maxdepth 6 -type d -name CInterface | head -n 1 || true)"
             if [ -n "$found_ci" ]; then
               maybe_base="$(dirname "$found_ci")"
               if is_base_ok "$maybe_base"; then
@@ -197,8 +234,6 @@ jobs:
 
           if [ -z "$base" ]; then
             echo Could not locate glslang base directory containing the expected subtree
-            echo "Searched candidates:"
-            printf "  %s\n" "${candidates[@]}"
             exit 1
           fi
 
@@ -214,7 +249,7 @@ jobs:
           install -m 0755 "$base/updateGrammar" "include/glslang/glslang/updateGrammar"
 
       - name: Reapply local patches if present
-        if: steps.decide.outputs.update == 'true'
+        if: steps.branchcheck.outputs.exists != 'true'
         run: |
           set -euo pipefail
           if ls patches/*.patch >/dev/null 2>&1; then
@@ -223,35 +258,37 @@ jobs:
             echo No patches found, skipping
           fi
 
-      - name: Commit and push to main
-        if: steps.decide.outputs.update == 'true'
+      - name: Commit changes on versioned release branch
+        if: steps.branchcheck.outputs.exists != 'true'
         run: |
           set -euo pipefail
 
+          release_ref="${{ steps.plan.outputs.release_ref }}"
+          vk_tag="${{ steps.upstream.outputs.vk_tag }}"
+          gl_tag="${{ steps.upstream.outputs.gl_tag }}"
+
+          git checkout -B "$release_ref"
+
           if git status --porcelain | grep .; then
             git add -A
-            git commit -m "Sync Vulkan-Headers ${{ steps.upstream.outputs.vk_tag }} and glslang ${{ steps.upstream.outputs.gl_tag }}"
-            git push origin main
+            git commit -m "Sync Vulkan-Headers ${vk_tag} and glslang ${gl_tag}"
           else
             echo No changes to commit
           fi
 
-      - name: Create release branch, tag, and GitHub Release
-        if: steps.decide.outputs.update == 'true'
+          git push -f origin "$release_ref"
+
+      - name: Create tag and GitHub Release
+        if: steps.branchcheck.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
+          release_ref="${{ steps.plan.outputs.release_ref }}"
           vk_tag="${{ steps.upstream.outputs.vk_tag }}"
           gl_tag="${{ steps.upstream.outputs.gl_tag }}"
-          vk_ver="${{ steps.upstream.outputs.vk_ver }}"
-          gl_ver="${{ steps.upstream.outputs.gl_ver }}"
           last_tag="${{ steps.local.outputs.last_tag }}"
-          release_ref="${{ steps.upstream.outputs.release_ref }}"
-
-          release_branch="${release_ref}"
-          repo_tag="${release_ref}"
 
           printf "%s\n" \
             "Automated vendor sync to upstream versions." \
@@ -267,27 +304,18 @@ jobs:
             "include/vulkan" \
             "include/vk_video" \
             "include/glslang/glslang with selected items" \
-            "" \
-            "Local changes: patches applied from patches if present." \
             > release_notes.txt
 
-          if git show-ref --verify --quiet "refs/heads/${release_branch}"; then
-            git branch -f "${release_branch}" HEAD
-          else
-            git branch "${release_branch}" HEAD
-          fi
-          git push -f origin "${release_branch}"
-
-          if ! git rev-parse "$repo_tag" >/dev/null 2>&1; then
-            git tag -a "$repo_tag" -m "Sync to Vulkan-Headers ${vk_tag} and glslang ${gl_tag}"
-            git push origin "$repo_tag"
+          if ! git rev-parse "$release_ref" >/dev/null 2>&1; then
+            git tag -a "$release_ref" -m "Sync to Vulkan-Headers ${vk_tag} and glslang ${gl_tag}"
+            git push origin "$release_ref"
           fi
 
-          if gh release view "$repo_tag" >/dev/null 2>&1; then
+          if gh release view "$release_ref" >/dev/null 2>&1; then
             echo Release already exists
             exit 0
           fi
 
-          gh release create "$repo_tag" \
+          gh release create "$release_ref" \
             --title "Vulkan-Headers ${vk_tag} and glslang ${gl_tag}" \
             --notes-file release_notes.txt
