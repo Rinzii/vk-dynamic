@@ -259,25 +259,28 @@ jobs:
           rsync -a --delete "$src_dir/include/vulkan/" "include/vulkan/"
           rsync -a --delete "$src_dir/include/vk_video/" "include/vk_video/"
 
-      - name: Vendor selected glslang subtree items only (Python, no bash loops)
+      - name: Vendor selected glslang subtree items only (fixed extraction root)
         if: steps.branchcheck.outputs.exists != 'true'
+        env:
+          GL_TAG: ${{ steps.upstream.outputs.gl_tag }}
         run: |
           set -euo pipefail
 
-          gl_tag="${{ steps.upstream.outputs.gl_tag }}"
-          url="https://github.com/KhronosGroup/glslang/archive/refs/tags/${gl_tag}.tar.gz"
+          url="https://github.com/KhronosGroup/glslang/archive/refs/tags/${GL_TAG}.tar.gz"
 
           tmp="$(mktemp -d)"
           curl -L "$url" -o "$tmp/glslang.tgz"
           tar -xzf "$tmp/glslang.tgz" -C "$tmp"
 
+          export SRC_ROOT="$tmp"
+
           python3 - <<'PY'
           import os, shutil, sys, glob
 
-          tmp = os.environ["TMPDIR"]
-          candidates = [d for d in glob.glob(os.path.join(tmp, "glslang-*")) if os.path.isdir(d)]
+          src_root = os.environ["SRC_ROOT"]
+          candidates = [d for d in glob.glob(os.path.join(src_root, "glslang-*")) if os.path.isdir(d)]
           if not candidates:
-            print("Expected glslang source directory not found")
+            print(f"Expected glslang source directory not found under {src_root}")
             sys.exit(1)
           src_dir = sorted(candidates)[0]
 
@@ -322,7 +325,7 @@ jobs:
                 break
 
           if not base:
-            print("Could not locate glslang base directory containing the expected subtree")
+            print(f"Could not locate glslang base directory containing the expected subtree under {src_dir}")
             sys.exit(1)
 
           out_root = os.path.join(os.getcwd(), "include", "glslang", "glslang")
@@ -336,8 +339,6 @@ jobs:
           for f in files_needed:
             shutil.copy2(os.path.join(base, f), os.path.join(out_root, f))
           PY
-        env:
-          TMPDIR: ${{ runner.temp }}
 
       - name: Update CMake version variables to match release
         if: steps.branchcheck.outputs.exists != 'true'
