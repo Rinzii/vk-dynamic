@@ -23,8 +23,15 @@ jobs:
           git config user.name vk-dynamic-sync-bot
           git config user.email actions@users.noreply.github.com
 
-      - name: Install GitHub CLI
-        uses: cli/cli@v2
+      - name: Ensure gh is available
+        run: |
+          if command -v gh >/dev/null 2>&1; then
+            gh --version
+          else
+            sudo apt-get update
+            sudo apt-get install -y gh
+            gh --version
+          fi
 
       - name: Fetch tags and branches
         run: |
@@ -33,7 +40,7 @@ jobs:
       - name: Get latest upstream release tags
         id: upstream
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           vk_tag=$(gh api repos/KhronosGroup/Vulkan-Headers/releases/latest --jq .tag_name)
           gl_tag=$(gh api repos/KhronosGroup/glslang/releases/latest --jq .tag_name)
@@ -46,33 +53,19 @@ jobs:
           echo "vk_tag=$vk_tag" >> "$GITHUB_OUTPUT"
           echo "gl_tag=$gl_tag" >> "$GITHUB_OUTPUT"
 
-      - name: Get last local release from tags (fallback to release branches)
+      - name: Get last local release from tags
         id: local
         run: |
           last_tag=$(git tag -l 'v*' --sort=-v:refname | head -n 1 || true)
-
-          if [ -n "$last_tag" ]; then
-            echo "last_ref=$last_tag" >> "$GITHUB_OUTPUT"
-            echo "source=tag" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          last_branch=$(git branch -r --list 'origin/v*' | sed 's|^[[:space:]]*origin/||' | sort -V | tail -n 1 || true)
-          if [ -n "$last_branch" ]; then
-            echo "last_ref=$last_branch" >> "$GITHUB_OUTPUT"
-            echo "source=branch" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "No prior release tag or release branch found"
-          echo "last_ref=" >> "$GITHUB_OUTPUT"
-          echo "source=none" >> "$GITHUB_OUTPUT"
+          echo "last_tag=$last_tag" >> "$GITHUB_OUTPUT"
 
       - name: Decide whether update is needed
         id: decide
         run: |
           update=false
-          if [ "${{ steps.upstream.outputs.vk_tag }}" != "${{ steps.local.outputs.last_ref }}" ]; then
+          if [ -z "${{ steps.local.outputs.last_tag }}" ]; then
+            update=true
+          elif [ "${{ steps.upstream.outputs.vk_tag }}" != "${{ steps.local.outputs.last_tag }}" ]; then
             update=true
           fi
           echo "update=$update" >> "$GITHUB_OUTPUT"
@@ -180,18 +173,6 @@ jobs:
             echo No patches found, skipping
           fi
 
-      - name: Update README versions (not used for detection)
-        if: steps.decide.outputs.update == 'true'
-        run: |
-          vk_tag="${{ steps.upstream.outputs.vk_tag }}"
-          vk_no_v="${vk_tag#v}"
-          gl_tag="${{ steps.upstream.outputs.gl_tag }}"
-
-          if [ -f README.md ]; then
-            perl -0777 -i -pe "s/(vk-dynamic is currently using version )[0-9]+\.[0-9]+\.[0-9]+/\$1${vk_no_v}/" README.md || true
-            perl -0777 -i -pe "s/(gslang is bundled with the headers and is using version )[0-9]+\.[0-9]+\.[0-9]+/\$1${gl_tag}/" README.md || true
-          fi
-
       - name: Commit and push to main
         if: steps.decide.outputs.update == 'true'
         run: |
@@ -206,18 +187,19 @@ jobs:
       - name: Create release branch, tag, and GitHub Release
         if: steps.decide.outputs.update == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           vk_tag="${{ steps.upstream.outputs.vk_tag }}"
           gl_tag="${{ steps.upstream.outputs.gl_tag }}"
+          last_tag="${{ steps.local.outputs.last_tag }}"
 
           release_branch="${vk_tag}"
-          repo_tag="vkheaders-${vk_tag}_glslang-${gl_tag}"
+          repo_tag="${vk_tag}"
 
           printf "%s\n" \
             "Automated vendor sync to upstream releases." \
             "" \
-            "Previous release ref: ${{ steps.local.outputs.last_ref }} (source: ${{ steps.local.outputs.source }})" \
+            "Previous local release: ${last_tag}" \
             "" \
             "Upstream Vulkan-Headers: ${vk_tag}" \
             "Upstream glslang: ${gl_tag}" \
@@ -232,10 +214,10 @@ jobs:
 
           git fetch origin --prune
 
-          if ! git show-ref --verify --quiet "refs/heads/${release_branch}"; then
-            git branch "${release_branch}" HEAD
-          else
+          if git show-ref --verify --quiet "refs/heads/${release_branch}"; then
             git branch -f "${release_branch}" HEAD
+          else
+            git branch "${release_branch}" HEAD
           fi
           git push -f origin "${release_branch}"
 
