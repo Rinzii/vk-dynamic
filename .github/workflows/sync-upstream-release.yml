@@ -55,7 +55,6 @@ jobs:
           get_latest_matching_tag() {
             owner_repo="$1"
             jq_filter="$2"
-
             gh api "repos/${owner_repo}/tags?per_page=100" --jq "$jq_filter"
           }
 
@@ -68,9 +67,9 @@ jobs:
             '[.[].name | select(test("^v?[0-9]+\\.[0-9]+\\.[0-9]+$"))][0] // empty')"
 
           if [ -z "$vk_tag" ] || [ -z "$gl_tag" ]; then
-            echo Failed to find version-number tags.
-            echo Vulkan-Headers tag: "$vk_tag"
-            echo glslang tag: "$gl_tag"
+            echo Failed to find version-number tags
+            echo Vulkan-Headers: "$vk_tag"
+            echo glslang: "$gl_tag"
             exit 1
           fi
 
@@ -82,7 +81,7 @@ jobs:
           echo "vk_ver=$vk_ver" >> "$GITHUB_OUTPUT"
           echo "gl_ver=$gl_ver" >> "$GITHUB_OUTPUT"
 
-      - name: Compute release ref vVK-GL (reuse old if upstream parse fails)
+      - name: Compute release ref vVK-GL
         id: plan
         run: |
           set -euo pipefail
@@ -96,12 +95,8 @@ jobs:
           use_vk="$up_vk"
           use_gl="$up_gl"
 
-          if [ -z "$use_vk" ]; then
-            use_vk="$last_vk"
-          fi
-          if [ -z "$use_gl" ]; then
-            use_gl="$last_gl"
-          fi
+          if [ -z "$use_vk" ]; then use_vk="$last_vk"; fi
+          if [ -z "$use_gl" ]; then use_gl="$last_gl"; fi
 
           if [ -z "$use_vk" ] || [ -z "$use_gl" ]; then
             echo Could not determine release versions
@@ -109,9 +104,12 @@ jobs:
           fi
 
           release_ref="v${use_vk}-${use_gl}"
+
+          echo "use_vk=$use_vk" >> "$GITHUB_OUTPUT"
+          echo "use_gl=$use_gl" >> "$GITHUB_OUTPUT"
           echo "release_ref=$release_ref" >> "$GITHUB_OUTPUT"
 
-      - name: Stop if release branch already exists
+      - name: Check whether release branch exists on origin
         id: branchcheck
         run: |
           set -euo pipefail
@@ -123,10 +121,55 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Stop if nothing to do
+      - name: If release branch exists, checkout it (for CMake correction only)
         if: steps.branchcheck.outputs.exists == 'true'
         run: |
-          echo Release branch already exists, doing nothing
+          set -euo pipefail
+          release_ref="${{ steps.plan.outputs.release_ref }}"
+          git checkout -B "$release_ref" "origin/$release_ref"
+
+      - name: If release branch exists, ensure CMake versioning is correct and push if needed
+        if: steps.branchcheck.outputs.exists == 'true'
+        run: |
+          set -euo pipefail
+
+          vk_ver="${{ steps.plan.outputs.use_vk }}"
+          gl_ver="${{ steps.plan.outputs.use_gl }}"
+          release_ref="${{ steps.plan.outputs.release_ref }}"
+
+          if [ ! -f CMakeLists.txt ]; then
+            echo CMakeLists.txt not found
+            exit 1
+          fi
+
+          perl -0777 -i -pe "s/(project\\(\\s*vk-dynamic\\b[^\\)]*\\bVERSION\\s+)[0-9]+\\.[0-9]+\\.[0-9]+/\\1${vk_ver}/s" CMakeLists.txt
+
+          if grep -q 'VK_DYNAMIC_VULKAN_HEADERS_VERSION' CMakeLists.txt; then
+            perl -0777 -i -pe "s/set\\(\\s*VK_DYNAMIC_VULKAN_HEADERS_VERSION\\s+\\\"?[^\\\"\\)]+\\\"?\\s*\\)/set(VK_DYNAMIC_VULKAN_HEADERS_VERSION \"${vk_ver}\")/s" CMakeLists.txt
+          fi
+          if grep -q 'VK_DYNAMIC_GLSLANG_VERSION' CMakeLists.txt; then
+            perl -0777 -i -pe "s/set\\(\\s*VK_DYNAMIC_GLSLANG_VERSION\\s+\\\"?[^\\\"\\)]+\\\"?\\s*\\)/set(VK_DYNAMIC_GLSLANG_VERSION \"${gl_ver}\")/s" CMakeLists.txt
+          fi
+          if grep -q 'VK_DYNAMIC_RELEASE_REF' CMakeLists.txt; then
+            perl -0777 -i -pe "s/set\\(\\s*VK_DYNAMIC_RELEASE_REF\\s+\\\"?[^\\\"\\)]+\\\"?\\s*\\)/set(VK_DYNAMIC_RELEASE_REF \"${release_ref}\")/s" CMakeLists.txt
+          fi
+
+          if ! grep -q 'VK_DYNAMIC_VULKAN_HEADERS_VERSION' CMakeLists.txt; then
+            perl -0777 -i -pe "s/(project\\([^\\)]*\\)\\s*)/\\1\\nset(VK_DYNAMIC_VULKAN_HEADERS_VERSION \"${vk_ver}\")\\nset(VK_DYNAMIC_GLSLANG_VERSION \"${gl_ver}\")\\nset(VK_DYNAMIC_RELEASE_REF \"${release_ref}\")\\n/s" CMakeLists.txt
+          fi
+
+          if git status --porcelain | grep -q .; then
+            git add CMakeLists.txt
+            git commit -m "Fix CMake versioning for ${release_ref}"
+            git push origin "$release_ref"
+          else
+            echo CMakeLists already correct, doing nothing
+          fi
+
+      - name: Stop after CMake correction when branch exists
+        if: steps.branchcheck.outputs.exists == 'true'
+        run: |
+          echo Release branch already exists, no vendor or release work performed
 
       - name: Checkout base for sync (last tag if present)
         if: steps.branchcheck.outputs.exists != 'true'
@@ -254,6 +297,36 @@ jobs:
           install -m 0644 "$base/stub.cpp" "include/glslang/glslang/stub.cpp"
           install -m 0755 "$base/updateGrammar" "include/glslang/glslang/updateGrammar"
 
+      - name: Update CMakeLists.txt versioning
+        if: steps.branchcheck.outputs.exists != 'true'
+        run: |
+          set -euo pipefail
+
+          vk_ver="${{ steps.plan.outputs.use_vk }}"
+          gl_ver="${{ steps.plan.outputs.use_gl }}"
+          release_ref="${{ steps.plan.outputs.release_ref }}"
+
+          if [ ! -f CMakeLists.txt ]; then
+            echo CMakeLists.txt not found
+            exit 1
+          fi
+
+          perl -0777 -i -pe "s/(project\\(\\s*vk-dynamic\\b[^\\)]*\\bVERSION\\s+)[0-9]+\\.[0-9]+\\.[0-9]+/\\1${vk_ver}/s" CMakeLists.txt
+
+          if grep -q 'VK_DYNAMIC_VULKAN_HEADERS_VERSION' CMakeLists.txt; then
+            perl -0777 -i -pe "s/set\\(\\s*VK_DYNAMIC_VULKAN_HEADERS_VERSION\\s+\\\"?[^\\\"\\)]+\\\"?\\s*\\)/set(VK_DYNAMIC_VULKAN_HEADERS_VERSION \"${vk_ver}\")/s" CMakeLists.txt
+          fi
+          if grep -q 'VK_DYNAMIC_GLSLANG_VERSION' CMakeLists.txt; then
+            perl -0777 -i -pe "s/set\\(\\s*VK_DYNAMIC_GLSLANG_VERSION\\s+\\\"?[^\\\"\\)]+\\\"?\\s*\\)/set(VK_DYNAMIC_GLSLANG_VERSION \"${gl_ver}\")/s" CMakeLists.txt
+          fi
+          if grep -q 'VK_DYNAMIC_RELEASE_REF' CMakeLists.txt; then
+            perl -0777 -i -pe "s/set\\(\\s*VK_DYNAMIC_RELEASE_REF\\s+\\\"?[^\\\"\\)]+\\\"?\\s*\\)/set(VK_DYNAMIC_RELEASE_REF \"${release_ref}\")/s" CMakeLists.txt
+          fi
+
+          if ! grep -q 'VK_DYNAMIC_VULKAN_HEADERS_VERSION' CMakeLists.txt; then
+            perl -0777 -i -pe "s/(project\\([^\\)]*\\)\\s*)/\\1\\nset(VK_DYNAMIC_VULKAN_HEADERS_VERSION \"${vk_ver}\")\\nset(VK_DYNAMIC_GLSLANG_VERSION \"${gl_ver}\")\\nset(VK_DYNAMIC_RELEASE_REF \"${release_ref}\")\\n/s" CMakeLists.txt
+          fi
+
       - name: Reapply local patches if present
         if: steps.branchcheck.outputs.exists != 'true'
         run: |
@@ -275,7 +348,7 @@ jobs:
 
           git checkout -B "$release_ref"
 
-          if git status --porcelain | grep .; then
+          if git status --porcelain | grep -q .; then
             git add -A
             git commit -m "Sync Vulkan-Headers ${vk_tag} and glslang ${gl_tag}"
           else
@@ -310,6 +383,10 @@ jobs:
             "include/vulkan" \
             "include/vk_video" \
             "include/glslang/glslang with selected items" \
+            "" \
+            "CMake updated:" \
+            "project VERSION set to Vulkan-Headers version" \
+            "VK_DYNAMIC_VULKAN_HEADERS_VERSION, VK_DYNAMIC_GLSLANG_VERSION, VK_DYNAMIC_RELEASE_REF set" \
             > release_notes.txt
 
           if ! git rev-parse "$release_ref" >/dev/null 2>&1; then
