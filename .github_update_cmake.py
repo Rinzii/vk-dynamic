@@ -1,7 +1,6 @@
 import os, re, sys
 
 vk_ver = os.environ["VK_VER"]
-release_ref = os.environ["RELEASE_REF"]
 
 p = "CMakeLists.txt"
 try:
@@ -17,7 +16,6 @@ rx_tag = re.compile(r'^\s*set\s*\(\s*VK_DYN_TAG\b', re.IGNORECASE)
 rx_min = re.compile(r'^\s*cmake_minimum_required\s*\(', re.IGNORECASE)
 
 set_ver = f'set(VK_DYN_VER "{vk_ver}" CACHE STRING "vk-dynamic project version")\n'
-set_tag = f'set(VK_DYN_TAG "{release_ref}" CACHE STRING "vk-dynamic release tag")\n'
 
 min_idx = None
 filtered = []
@@ -42,7 +40,6 @@ if not filtered[min_idx].endswith("\n"):
   out.append("\n")
 out.append("\n")
 out.append(set_ver)
-out.append(set_tag)
 out.append("\n")
 out.extend(filtered[insert_at:])
 
@@ -52,6 +49,6 @@ chk = open(p, "r", encoding="utf-8").read()
 if set_ver.strip() not in chk:
   print("Failed to set VK_DYN_VER")
   sys.exit(1)
-if set_tag.strip() not in chk:
-  print("Failed to set VK_DYN_TAG")
+if "VK_DYN_TAG" in chk:
+  print("VK_DYN_TAG still present, expected it to be removed")
   sys.exit(1)
