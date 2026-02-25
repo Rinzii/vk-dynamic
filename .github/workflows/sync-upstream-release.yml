@@ -163,20 +163,30 @@ jobs:
             else
               perl -0777 -i -pe 's/(set\\(VK_DYN_VER[^\\n]*\\)\\n\\n)/$1set(VK_DYN_TAG "v'"$vk_ver"'-'"$gl_ver"'" CACHE STRING "vk-dynamic release tag")\\n\\n/s' CMakeLists.txt
             fi
+          }
 
-            if ! grep -Fq "set(VK_DYN_VER \"${vk_ver}\" CACHE STRING \"vk-dynamic project version\")" CMakeLists.txt; then
-              echo "Failed to set VK_DYN_VER"
-              exit 1
-            fi
-
-            if ! grep -Fq "set(VK_DYN_TAG \"v${vk_ver}-${gl_ver}\" CACHE STRING \"vk-dynamic release tag\")" CMakeLists.txt; then
-              echo "Failed to set VK_DYN_TAG"
-              exit 1
-            fi
+          # corrected: no extra single quotes in the stored tag string
+          perl_fix_tag() {
+            perl -i -pe 's/^[[:space:]]*set\(VK_DYN_TAG[[:space:]]+.*$/set(VK_DYN_TAG "v'"$vk_ver"'-'"$gl_ver"'" CACHE STRING "vk-dynamic release tag")/m' CMakeLists.txt
           }
 
           git checkout -B "$release_ref" "origin/$release_ref"
           fix_cmake_vars
+          perl -i -pe 's/^[[:space:]]*set\(VK_DYN_TAG[[:space:]]+.*$/set(VK_DYN_TAG "v'"$vk_ver"'-'"$gl_ver"'" CACHE STRING "vk-dynamic release tag")/m' CMakeLists.txt
+
+          # overwrite with correct VK_DYN_TAG line
+          perl -i -pe 's/^[[:space:]]*set\(VK_DYN_TAG[[:space:]]+.*$/set(VK_DYN_TAG "v'"$vk_ver"'-'"$gl_ver"'" CACHE STRING "vk-dynamic release tag")/m' CMakeLists.txt
+          perl -i -pe 's/set\(VK_DYN_TAG "v'\''?([0-9.]+)'\''?-'\''?([0-9.]+)'\''?" CACHE STRING "vk-dynamic release tag"\)/set(VK_DYN_TAG "v\1-\2" CACHE STRING "vk-dynamic release tag")/m' CMakeLists.txt
+
+          if ! grep -Fq "set(VK_DYN_VER \"${vk_ver}\" CACHE STRING \"vk-dynamic project version\")" CMakeLists.txt; then
+            echo "Failed to set VK_DYN_VER"
+            exit 1
+          fi
+          if ! grep -Fq "set(VK_DYN_TAG \"v${vk_ver}-${gl_ver}\" CACHE STRING \"vk-dynamic release tag\")" CMakeLists.txt; then
+            echo "Failed to set VK_DYN_TAG"
+            exit 1
+          fi
+
           if git status --porcelain | grep -q .; then
             git add CMakeLists.txt
             git commit -m "Fix CMake version variables for ${release_ref}"
@@ -185,6 +195,18 @@ jobs:
 
           git checkout -B "$default_branch" "origin/$default_branch"
           fix_cmake_vars
+          perl -i -pe 's/^[[:space:]]*set\(VK_DYN_TAG[[:space:]]+.*$/set(VK_DYN_TAG "v'"$vk_ver"'-'"$gl_ver"'" CACHE STRING "vk-dynamic release tag")/m' CMakeLists.txt
+          perl -i -pe 's/set\(VK_DYN_TAG "v'\''?([0-9.]+)'\''?-'\''?([0-9.]+)'\''?" CACHE STRING "vk-dynamic release tag"\)/set(VK_DYN_TAG "v\1-\2" CACHE STRING "vk-dynamic release tag")/m' CMakeLists.txt
+
+          if ! grep -Fq "set(VK_DYN_VER \"${vk_ver}\" CACHE STRING \"vk-dynamic project version\")" CMakeLists.txt; then
+            echo "Failed to set VK_DYN_VER"
+            exit 1
+          fi
+          if ! grep -Fq "set(VK_DYN_TAG \"v${vk_ver}-${gl_ver}\" CACHE STRING \"vk-dynamic release tag\")" CMakeLists.txt; then
+            echo "Failed to set VK_DYN_TAG"
+            exit 1
+          fi
+
           if git status --porcelain | grep -q .; then
             git add CMakeLists.txt
             git commit -m "Fix CMake version variables for ${release_ref}"
@@ -322,6 +344,8 @@ jobs:
           else
             perl -0777 -i -pe 's/(set\\(VK_DYN_VER[^\\n]*\\)\\n\\n)/$1set(VK_DYN_TAG "v'"$vk_ver"'-'"$gl_ver"'" CACHE STRING "vk-dynamic release tag")\\n\\n/s' CMakeLists.txt
           fi
+
+          perl -i -pe 's/set\(VK_DYN_TAG "v'\''?([0-9.]+)'\''?-'\''?([0-9.]+)'\''?" CACHE STRING "vk-dynamic release tag"\)/set(VK_DYN_TAG "v\1-\2" CACHE STRING "vk-dynamic release tag")/m' CMakeLists.txt
 
           if ! grep -Fq "set(VK_DYN_VER \"${vk_ver}\" CACHE STRING \"vk-dynamic project version\")" CMakeLists.txt; then
             echo "Failed to set VK_DYN_VER"
