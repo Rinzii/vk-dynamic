@@ -1,4 +1,4 @@
-name: Sync upstream releases and publish release
+name: Sync upstream Vulkan-Headers and publish release
 
 on:
   workflow_dispatch:
@@ -54,58 +54,44 @@ jobs:
           echo "last_vk=$last_vk" >> "$GITHUB_OUTPUT"
           echo "last_gl=$last_gl" >> "$GITHUB_OUTPUT"
 
-      - name: Get latest upstream version-number tags
+      - name: Get latest upstream Vulkan-Headers version-number tag
         id: upstream
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
-          get_latest_matching_tag() {
-            local owner_repo="$1"
-            local jq_filter="$2"
-            gh api "repos/${owner_repo}/tags?per_page=100" --jq "$jq_filter"
-          }
+          vk_tag="$(gh api "repos/KhronosGroup/Vulkan-Headers/tags?per_page=100" \
+            --jq '[.[].name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))][0] // empty')"
 
-          vk_tag="$(get_latest_matching_tag \
-            "KhronosGroup/Vulkan-Headers" \
-            '[.[].name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))][0] // empty')"
-
-          gl_tag="$(get_latest_matching_tag \
-            "KhronosGroup/glslang" \
-            '[.[].name | select(test("^v?[0-9]+\\.[0-9]+\\.[0-9]+$"))][0] // empty')"
-
-          if [ -z "$vk_tag" ] || [ -z "$gl_tag" ]; then
-            echo "Failed to find version-number tags"
-            echo "Vulkan-Headers: $vk_tag"
-            echo "glslang: $gl_tag"
+          if [ -z "$vk_tag" ]; then
+            echo "Failed to find Vulkan-Headers version-number tag"
             exit 1
           fi
 
           vk_ver="${vk_tag#v}"
-          gl_ver="${gl_tag#v}"
 
           echo "vk_tag=$vk_tag" >> "$GITHUB_OUTPUT"
-          echo "gl_tag=$gl_tag" >> "$GITHUB_OUTPUT"
           echo "vk_ver=$vk_ver" >> "$GITHUB_OUTPUT"
-          echo "gl_ver=$gl_ver" >> "$GITHUB_OUTPUT"
 
-      - name: Compute release ref vVK-GL
+      - name: Compute release ref vVK-GL (reuse old glslang if unchanged)
         id: plan
         run: |
           set -euo pipefail
 
           last_vk="${{ steps.local.outputs.last_vk }}"
           last_gl="${{ steps.local.outputs.last_gl }}"
-
           up_vk="${{ steps.upstream.outputs.vk_ver }}"
-          up_gl="${{ steps.upstream.outputs.gl_ver }}"
+
+          if [ -z "$last_gl" ]; then
+            echo "No previous local release tag found to reuse glslang version"
+            exit 1
+          fi
 
           use_vk="$up_vk"
-          use_gl="$up_gl"
+          use_gl="$last_gl"
 
           if [ -z "$use_vk" ]; then use_vk="$last_vk"; fi
-          if [ -z "$use_gl" ]; then use_gl="$last_gl"; fi
 
           if [ -z "$use_vk" ] || [ -z "$use_gl" ]; then
             echo "Could not determine release versions"
@@ -129,7 +115,7 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Helper - update CMake version variables idempotently
+      - name: Create CMake updater helper
         run: |
           cat > .github_update_cmake.py <<'PY'
           import os, re, sys
@@ -183,10 +169,10 @@ jobs:
           open(p, "w", encoding="utf-8", newline="").write("".join(out))
 
           chk = open(p, "r", encoding="utf-8").read()
-          if f'set(VK_DYN_VER "{vk_ver}" CACHE STRING "vk-dynamic project version")' not in chk:
+          if set_ver.strip() not in chk:
             print("Failed to set VK_DYN_VER")
             sys.exit(1)
-          if f'set(VK_DYN_TAG "v{vk_ver}-{gl_ver}" CACHE STRING "vk-dynamic release tag")' not in chk:
+          if set_tag.strip() not in chk:
             print("Failed to set VK_DYN_TAG")
             sys.exit(1)
           PY
@@ -259,87 +245,6 @@ jobs:
           rsync -a --delete "$src_dir/include/vulkan/" "include/vulkan/"
           rsync -a --delete "$src_dir/include/vk_video/" "include/vk_video/"
 
-      - name: Vendor selected glslang subtree items only (fixed extraction root)
-        if: steps.branchcheck.outputs.exists != 'true'
-        env:
-          GL_TAG: ${{ steps.upstream.outputs.gl_tag }}
-        run: |
-          set -euo pipefail
-
-          url="https://github.com/KhronosGroup/glslang/archive/refs/tags/${GL_TAG}.tar.gz"
-
-          tmp="$(mktemp -d)"
-          curl -L "$url" -o "$tmp/glslang.tgz"
-          tar -xzf "$tmp/glslang.tgz" -C "$tmp"
-
-          export SRC_ROOT="$tmp"
-
-          python3 - <<'PY'
-          import os, shutil, sys, glob
-
-          src_root = os.environ["SRC_ROOT"]
-          candidates = [d for d in glob.glob(os.path.join(src_root, "glslang-*")) if os.path.isdir(d)]
-          if not candidates:
-            print(f"Expected glslang source directory not found under {src_root}")
-            sys.exit(1)
-          src_dir = sorted(candidates)[0]
-
-          dirs_needed = [
-            "CInterface",
-            "ExtensionHeaders",
-            "GenericCodeGen",
-            "HLSL",
-            "Include",
-            "MachineIndependent",
-            "OSDependent",
-            "Public",
-            "ResourceLimits",
-          ]
-          files_needed = ["CMakeLists.txt", "stub.cpp", "updateGrammar"]
-
-          def is_base_ok(base: str) -> bool:
-            for d in dirs_needed:
-              if not os.path.isdir(os.path.join(base, d)):
-                return False
-            for f in files_needed:
-              if not os.path.exists(os.path.join(base, f)):
-                return False
-            return True
-
-          base = ""
-          for c in [
-            os.path.join(src_dir, "glslang", "glslang"),
-            os.path.join(src_dir, "glslang"),
-            src_dir,
-          ]:
-            if os.path.isdir(c) and is_base_ok(c):
-              base = c
-              break
-
-          if not base:
-            hits = glob.glob(os.path.join(src_dir, "**", "CInterface"), recursive=True)
-            for h in hits:
-              maybe = os.path.dirname(h)
-              if is_base_ok(maybe):
-                base = maybe
-                break
-
-          if not base:
-            print(f"Could not locate glslang base directory containing the expected subtree under {src_dir}")
-            sys.exit(1)
-
-          out_root = os.path.join(os.getcwd(), "include", "glslang", "glslang")
-          if os.path.exists(out_root):
-            shutil.rmtree(out_root)
-          os.makedirs(out_root, exist_ok=True)
-
-          for d in dirs_needed:
-            shutil.copytree(os.path.join(base, d), os.path.join(out_root, d), dirs_exist_ok=True)
-
-          for f in files_needed:
-            shutil.copy2(os.path.join(base, f), os.path.join(out_root, f))
-          PY
-
       - name: Update CMake version variables to match release
         if: steps.branchcheck.outputs.exists != 'true'
         env:
@@ -349,16 +254,6 @@ jobs:
           set -euo pipefail
           python3 .github_update_cmake.py
 
-      - name: Reapply local patches if present
-        if: steps.branchcheck.outputs.exists != 'true'
-        run: |
-          set -euo pipefail
-          if ls patches/*.patch >/dev/null 2>&1; then
-            git am --3way patches/*.patch
-          else
-            echo "No patches found, skipping"
-          fi
-
       - name: Commit and push changes to default branch
         if: steps.branchcheck.outputs.exists != 'true'
         run: |
@@ -366,11 +261,10 @@ jobs:
 
           default_branch="${{ steps.def.outputs.default_branch }}"
           vk_tag="${{ steps.upstream.outputs.vk_tag }}"
-          gl_tag="${{ steps.upstream.outputs.gl_tag }}"
 
           if git status --porcelain | grep -q .; then
             git add -A
-            git commit -m "Sync Vulkan-Headers ${vk_tag} and glslang ${gl_tag}"
+            git commit -m "Sync Vulkan-Headers ${vk_tag}"
             git push origin "refs/heads/$default_branch:refs/heads/$default_branch"
           else
             echo "No changes to commit on default branch"
@@ -393,11 +287,9 @@ jobs:
 
           release_ref="${{ steps.plan.outputs.release_ref }}"
           vk_tag="${{ steps.upstream.outputs.vk_tag }}"
-          gl_tag="${{ steps.upstream.outputs.gl_tag }}"
           last_tag="${{ steps.local.outputs.last_tag }}"
 
           vk_url="https://github.com/KhronosGroup/Vulkan-Headers/releases/tag/${vk_tag}"
-          gl_url="https://github.com/KhronosGroup/glslang/releases/tag/${gl_tag}"
 
           printf "%s\n" \
             "Automated vendor sync to upstream releases." \
@@ -407,14 +299,11 @@ jobs:
             "Upstream Vulkan-Headers: ${vk_tag}" \
             "${vk_url}" \
             "" \
-            "Upstream glslang: ${gl_tag}" \
-            "${gl_url}" \
-            "" \
             "Release ref: ${release_ref}" \
             > release_notes.txt
 
           if ! git show-ref --verify --quiet "refs/tags/$release_ref"; then
-            git tag -a "$release_ref" -m "Sync to Vulkan-Headers ${vk_tag} and glslang ${gl_tag}"
+            git tag -a "$release_ref" -m "Sync to Vulkan-Headers ${vk_tag}"
             git push origin "refs/tags/$release_ref:refs/tags/$release_ref"
           fi
 
@@ -424,5 +313,11 @@ jobs:
           fi
 
           gh release create "$release_ref" \
-            --title "Vulkan-Headers ${vk_tag} and glslang ${gl_tag}" \
+            --title "Vulkan-Headers ${vk_tag}" \
             --notes-file release_notes.txt
+
+      - name: Cleanup temporary helper script
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -f .github_update_cmake.py
