@@ -1,0 +1,217 @@
+name: Sync upstream releases and publish release
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 14 * * 1"
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name vk-dynamic-sync-bot
+          git config user.email actions@users.noreply.github.com
+
+      - name: Install GitHub CLI
+        uses: cli/cli@v2
+
+      - name: Read current versions from README
+        id: current
+        run: |
+          cur_vk=$(grep -Eo 'vk-dynamic is currently using version[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+' README.md | head -n 1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' || true)
+          cur_gl=$(grep -Eo 'gslang is bundled with the headers and is using version[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+' README.md | head -n 1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' || true)
+
+          if [ -z "$cur_vk" ] || [ -z "$cur_gl" ]; then
+            echo Failed to parse versions from README.md
+            exit 1
+          fi
+
+          echo "cur_vk=v${cur_vk}" >> "$GITHUB_OUTPUT"
+          echo "cur_gl=${cur_gl}" >> "$GITHUB_OUTPUT"
+
+      - name: Get latest upstream release tags
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          vk_tag=$(gh api repos/KhronosGroup/Vulkan-Headers/releases/latest --jq .tag_name)
+          gl_tag=$(gh api repos/KhronosGroup/glslang/releases/latest --jq .tag_name)
+
+          if [ -z "$vk_tag" ] || [ -z "$gl_tag" ]; then
+            echo Failed to fetch upstream release tags
+            exit 1
+          fi
+
+          echo "vk_tag=$vk_tag" >> "$GITHUB_OUTPUT"
+          echo "gl_tag=$gl_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether update is needed
+        id: decide
+        run: |
+          update=false
+          if [ "${{ steps.current.outputs.cur_vk }}" != "${{ steps.upstream.outputs.vk_tag }}" ]; then
+            update=true
+          fi
+          if [ "${{ steps.current.outputs.cur_gl }}" != "${{ steps.upstream.outputs.gl_tag }}" ]; then
+            update=true
+          fi
+          echo "update=$update" >> "$GITHUB_OUTPUT"
+
+      - name: Stop if no update is needed
+        if: steps.decide.outputs.update != 'true'
+        run: |
+          echo No upstream release updates detected
+
+      - name: Vendor Vulkan-Headers include/vulkan and include/vk_video only
+        if: steps.decide.outputs.update == 'true'
+        run: |
+          vk_tag="${{ steps.upstream.outputs.vk_tag }}"
+          url="https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/${vk_tag}.tar.gz"
+
+          tmp=$(mktemp -d)
+          curl -L "$url" -o "$tmp/vkheaders.tgz"
+          tar -xzf "$tmp/vkheaders.tgz" -C "$tmp"
+
+          src_dir=$(find "$tmp" -maxdepth 1 -type d -name "Vulkan-Headers-*" | head -n 1)
+          if [ -z "$src_dir" ]; then
+            echo Expected Vulkan-Headers source directory not found
+            exit 1
+          fi
+
+          if [ ! -d "$src_dir/include/vulkan" ]; then
+            echo Expected include/vulkan not found in Vulkan-Headers tarball
+            exit 1
+          fi
+
+          rm -rf include/vulkan
+          mkdir -p include/vulkan
+          rsync -a --delete "$src_dir/include/vulkan/" "include/vulkan/"
+
+          if [ ! -d "$src_dir/include/vk_video" ]; then
+            echo Expected include/vk_video not found in Vulkan-Headers tarball
+            exit 1
+          fi
+
+          rm -rf include/vk_video
+          mkdir -p include/vk_video
+          rsync -a --delete "$src_dir/include/vk_video/" "include/vk_video/"
+
+      - name: Vendor selected glslang glslang subtree items only
+        if: steps.decide.outputs.update == 'true'
+        run: |
+          gl_tag="${{ steps.upstream.outputs.gl_tag }}"
+          url="https://github.com/KhronosGroup/glslang/archive/refs/tags/${gl_tag}.tar.gz"
+
+          tmp=$(mktemp -d)
+          curl -L "$url" -o "$tmp/glslang.tgz"
+          tar -xzf "$tmp/glslang.tgz" -C "$tmp"
+
+          src_dir=$(find "$tmp" -maxdepth 1 -type d -name "glslang-*" | head -n 1)
+          if [ -z "$src_dir" ]; then
+            echo Expected glslang source directory not found
+            exit 1
+          fi
+
+          if [ ! -d "$src_dir/glslang/glslang" ]; then
+            echo Expected glslang/glslang not found in glslang tarball
+            exit 1
+          fi
+
+          rm -rf include/glslang/glslang
+          mkdir -p include/glslang/glslang
+
+          dirs=(
+            CInterface
+            ExtensionHeaders
+            GenericCodeGen
+            HLSL
+            Include
+            MachineIndependent
+            OSDependent
+            Public
+            ResourceLimits
+          )
+
+          for d in "${dirs[@]}"; do
+            if [ ! -d "$src_dir/glslang/glslang/$d" ]; then
+              echo Missing expected directory glslang/glslang/$d
+              exit 1
+            fi
+            rsync -a --delete "$src_dir/glslang/glslang/$d/" "include/glslang/glslang/$d/"
+          done
+
+          for f in CMakeLists.txt stub.cpp updateGrammar; do
+            if [ ! -e "$src_dir/glslang/glslang/$f" ]; then
+              echo Missing expected file glslang/glslang/$f
+              exit 1
+            fi
+          done
+
+          install -m 0644 "$src_dir/glslang/glslang/CMakeLists.txt" "include/glslang/glslang/CMakeLists.txt"
+          install -m 0644 "$src_dir/glslang/glslang/stub.cpp" "include/glslang/glslang/stub.cpp"
+          install -m 0755 "$src_dir/glslang/glslang/updateGrammar" "include/glslang/glslang/updateGrammar"
+
+      - name: Reapply local patches if present
+        if: steps.decide.outputs.update == 'true'
+        run: |
+          if ls patches/*.patch >/dev/null 2>&1; then
+            git am --3way patches/*.patch
+          else
+            echo No patches found, skipping
+          fi
+
+      - name: Update README versions
+        if: steps.decide.outputs.update == 'true'
+        run: |
+          vk_tag="${{ steps.upstream.outputs.vk_tag }}"
+          vk_no_v="${vk_tag#v}"
+
+          perl -0777 -i -pe "s/(vk-dynamic is currently using version )[0-9]+\.[0-9]+\.[0-9]+/\$1${vk_no_v}/" README.md
+          perl -0777 -i -pe "s/(gslang is bundled with the headers and is using version )[0-9]+\.[0-9]+\.[0-9]+/\$1${{ steps.upstream.outputs.gl_tag }}/" README.md
+
+      - name: Commit and push to main
+        if: steps.decide.outputs.update == 'true'
+        run: |
+          if git status --porcelain | grep .; then
+            git add -A
+            git commit -m "Sync Vulkan-Headers ${{ steps.upstream.outputs.vk_tag }} and glslang ${{ steps.upstream.outputs.gl_tag }}"
+            git push origin main
+          else
+            echo No changes to commit
+          fi
+
+      - name: Create tag and GitHub Release in this repo
+        if: steps.decide.outputs.update == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          vk_tag="${{ steps.upstream.outputs.vk_tag }}"
+          gl_tag="${{ steps.upstream.outputs.gl_tag }}"
+          repo_tag="vkheaders-${vk_tag}_glslang-${gl_tag}"
+
+          if ! git rev-parse "$repo_tag" >/dev/null 2>&1; then
+            git tag -a "$repo_tag" -m "Sync to Vulkan-Headers ${vk_tag} and glslang ${gl_tag}"
+            git push origin "$repo_tag"
+          fi
+
+          if gh release view "$repo_tag" >/dev/null 2>&1; then
+            echo Release already exists
+            exit 0
+          fi
+
+          notes="Automated vendor sync to upstream releases.\n\nUpstream Vulkan-Headers: ${vk_tag}\nUpstream glslang: ${gl_tag}\n\nVendored paths updated:\ninclude/vulkan\ninclude/vk_video\ninclude/glslang/glslang with selected items\n\nLocal changes: patches applied from patches if present."
+
+          gh release create "$repo_tag" \
+            --title "Vulkan-Headers ${vk_tag} and glslang ${gl_tag}" \
+            --notes "$notes"
