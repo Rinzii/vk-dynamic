@@ -49,9 +49,9 @@ out.extend(filtered[insert_at:])
 open(p, "w", encoding="utf-8", newline="").write("".join(out))
 
 chk = open(p, "r", encoding="utf-8").read()
-if f'set(VK_DYN_VER "{vk_ver}" CACHE STRING "vk-dynamic project version")' not in chk:
+if set_ver.strip() not in chk:
   print("Failed to set VK_DYN_VER")
   sys.exit(1)
-if f'set(VK_DYN_TAG "v{vk_ver}-{gl_ver}" CACHE STRING "vk-dynamic release tag")' not in chk:
+if set_tag.strip() not in chk:
   print("Failed to set VK_DYN_TAG")
   sys.exit(1)
