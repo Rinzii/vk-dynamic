@@ -133,7 +133,7 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: If release branch exists, fix CMake project VERSION on both default and release branch
+      - name: If release branch exists, fix CMake VERSION on both default and release branch
         if: steps.branchcheck.outputs.exists == 'true'
         run: |
           set -euo pipefail
@@ -148,10 +148,10 @@ jobs:
               exit 1
             fi
 
-            if grep -Eq '^[[:space:]]*project\([[:space:]]*vk-dynamic\b' CMakeLists.txt; then
-              perl -0777 -i -pe "s/(project\\(\\s*vk-dynamic\\b[^\\)]*\\bVERSION\\s+)[0-9]+\\.[0-9]+\\.[0-9]+/\\1${cmake_ver}/s" CMakeLists.txt
-            else
-              echo "project(vk-dynamic ...) line not found"
+            perl -i -pe 's/^[[:space:]]*project\([[:space:]]*vk-dynamic\b.*\)$/project(vk-dynamic LANGUAGES C VERSION '"$cmake_ver"')/m' CMakeLists.txt
+
+            if ! grep -Eq '^[[:space:]]*project\([[:space:]]*vk-dynamic[[:space:]]+LANGUAGES[[:space:]]+C[[:space:]]+VERSION[[:space:]]+'"$cmake_ver"'\)' CMakeLists.txt; then
+              echo "Failed to update project() line"
               exit 1
             fi
           }
@@ -295,10 +295,10 @@ jobs:
             exit 1
           fi
 
-          if grep -Eq '^[[:space:]]*project\([[:space:]]*vk-dynamic\b' CMakeLists.txt; then
-            perl -0777 -i -pe "s/(project\\(\\s*vk-dynamic\\b[^\\)]*\\bVERSION\\s+)[0-9]+\\.[0-9]+\\.[0-9]+/\\1${cmake_ver}/s" CMakeLists.txt
-          else
-            echo "project(vk-dynamic ...) line not found"
+          perl -i -pe 's/^[[:space:]]*project\([[:space:]]*vk-dynamic\b.*\)$/project(vk-dynamic LANGUAGES C VERSION '"$cmake_ver"')/m' CMakeLists.txt
+
+          if ! grep -Eq '^[[:space:]]*project\([[:space:]]*vk-dynamic[[:space:]]+LANGUAGES[[:space:]]+C[[:space:]]+VERSION[[:space:]]+'"$cmake_ver"'\)' CMakeLists.txt; then
+            echo "Failed to update project() line"
             exit 1
           fi
 
