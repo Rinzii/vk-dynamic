@@ -102,9 +102,11 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create CMake updater helper
+      - name: Write workflows/github_update_cmake.py
         run: |
-          cat > .github_update_cmake.py <<'PY'
+          set -euo pipefail
+          mkdir -p .github/workflows
+          cat > .github/workflows/github_update_cmake.py <<'PY'
           import os, re, sys
 
           vk_ver = os.environ["VK_VER"]
@@ -172,18 +174,18 @@ jobs:
           release_ref="${{ steps.plan.outputs.release_ref }}"
 
           git checkout -B "$release_ref" "origin/$release_ref"
-          python3 .github_update_cmake.py
+          python3 .github/workflows/github_update_cmake.py
           if git status --porcelain | grep -q .; then
-            git add CMakeLists.txt
-            git commit -m "Fix CMake version variables for ${release_ref}"
+            git add CMakeLists.txt .github/workflows/github_update_cmake.py
+            git commit -m "Fix CMake version for ${release_ref}"
             git push origin "refs/heads/$release_ref:refs/heads/$release_ref"
           fi
 
           git checkout -B "$default_branch" "origin/$default_branch"
-          python3 .github_update_cmake.py
+          python3 .github/workflows/github_update_cmake.py
           if git status --porcelain | grep -q .; then
-            git add CMakeLists.txt
-            git commit -m "Fix CMake version variables for ${release_ref}"
+            git add CMakeLists.txt .github/workflows/github_update_cmake.py
+            git commit -m "Fix CMake version for ${release_ref}"
             git push origin "refs/heads/$default_branch:refs/heads/$default_branch"
           fi
 
@@ -234,7 +236,7 @@ jobs:
           VK_VER: ${{ steps.plan.outputs.use_vk }}
         run: |
           set -euo pipefail
-          python3 .github_update_cmake.py
+          python3 .github/workflows/github_update_cmake.py
 
       - name: Commit and push changes to default branch
         if: steps.branchcheck.outputs.exists != 'true'
@@ -297,9 +299,3 @@ jobs:
           gh release create "$release_ref" \
             --title "Vulkan-Headers ${vk_tag}" \
             --notes-file release_notes.txt
-
-      - name: Cleanup temporary helper script
-        if: always()
-        run: |
-          set -euo pipefail
-          rm -f .github_update_cmake.py
