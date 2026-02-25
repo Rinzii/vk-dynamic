@@ -23,41 +23,46 @@ jobs:
           git config user.name vk-dynamic-sync-bot
           git config user.email actions@users.noreply.github.com
 
-      - name: Ensure gh is available
-        run: |
-          if command -v gh >/dev/null 2>&1; then
-            gh --version
-          else
-            sudo apt-get update
-            sudo apt-get install -y gh
-            gh --version
-          fi
-
       - name: Fetch tags and branches
         run: |
           git fetch --tags --force --prune origin +refs/heads/*:refs/remotes/origin/*
-
-      - name: Get latest upstream release tags
-        id: upstream
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          vk_tag=$(gh api repos/KhronosGroup/Vulkan-Headers/releases/latest --jq .tag_name)
-          gl_tag=$(gh api repos/KhronosGroup/glslang/releases/latest --jq .tag_name)
-
-          if [ -z "$vk_tag" ] || [ -z "$gl_tag" ]; then
-            echo Failed to fetch upstream release tags
-            exit 1
-          fi
-
-          echo "vk_tag=$vk_tag" >> "$GITHUB_OUTPUT"
-          echo "gl_tag=$gl_tag" >> "$GITHUB_OUTPUT"
 
       - name: Get last local release from tags
         id: local
         run: |
           last_tag=$(git tag -l 'v*' --sort=-v:refname | head -n 1 || true)
           echo "last_tag=$last_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Get latest upstream versions
+        id: upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          latest_from_releases_or_tags() {
+            owner_repo="$1"
+
+            rel_tag="$(gh api "repos/${owner_repo}/releases" --jq '[.[] | select(.prerelease == false)][0].tag_name // empty' 2>/dev/null || true)"
+            if [ -n "$rel_tag" ]; then
+              printf "%s" "$rel_tag"
+              return 0
+            fi
+
+            tag_name="$(gh api "repos/${owner_repo}/tags" --jq '.[0].name // empty' 2>/dev/null || true)"
+            if [ -n "$tag_name" ]; then
+              printf "%s" "$tag_name"
+              return 0
+            fi
+
+            return 1
+          }
+
+          vk_tag="$(latest_from_releases_or_tags "KhronosGroup/Vulkan-Headers")" || { echo Failed to fetch Vulkan-Headers tag; exit 1; }
+          gl_tag="$(latest_from_releases_or_tags "KhronosGroup/glslang")" || { echo Failed to fetch glslang tag; exit 1; }
+
+          echo "vk_tag=$vk_tag" >> "$GITHUB_OUTPUT"
+          echo "gl_tag=$gl_tag" >> "$GITHUB_OUTPUT"
 
       - name: Decide whether update is needed
         id: decide
@@ -73,11 +78,13 @@ jobs:
       - name: Stop if no update is needed
         if: steps.decide.outputs.update != 'true'
         run: |
-          echo No upstream Vulkan-Headers release updates detected
+          echo No upstream Vulkan-Headers tag updates detected
 
       - name: Vendor Vulkan-Headers include/vulkan and include/vk_video only
         if: steps.decide.outputs.update == 'true'
         run: |
+          set -euo pipefail
+
           vk_tag="${{ steps.upstream.outputs.vk_tag }}"
           url="https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/${vk_tag}.tar.gz"
 
@@ -112,6 +119,8 @@ jobs:
       - name: Vendor selected glslang glslang subtree items only
         if: steps.decide.outputs.update == 'true'
         run: |
+          set -euo pipefail
+
           gl_tag="${{ steps.upstream.outputs.gl_tag }}"
           url="https://github.com/KhronosGroup/glslang/archive/refs/tags/${gl_tag}.tar.gz"
 
@@ -167,6 +176,7 @@ jobs:
       - name: Reapply local patches if present
         if: steps.decide.outputs.update == 'true'
         run: |
+          set -euo pipefail
           if ls patches/*.patch >/dev/null 2>&1; then
             git am --3way patches/*.patch
           else
@@ -176,6 +186,8 @@ jobs:
       - name: Commit and push to main
         if: steps.decide.outputs.update == 'true'
         run: |
+          set -euo pipefail
+
           if git status --porcelain | grep .; then
             git add -A
             git commit -m "Sync Vulkan-Headers ${{ steps.upstream.outputs.vk_tag }} and glslang ${{ steps.upstream.outputs.gl_tag }}"
@@ -189,6 +201,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+
           vk_tag="${{ steps.upstream.outputs.vk_tag }}"
           gl_tag="${{ steps.upstream.outputs.gl_tag }}"
           last_tag="${{ steps.local.outputs.last_tag }}"
@@ -197,7 +211,7 @@ jobs:
           repo_tag="${vk_tag}"
 
           printf "%s\n" \
-            "Automated vendor sync to upstream releases." \
+            "Automated vendor sync to upstream versions." \
             "" \
             "Previous local release: ${last_tag}" \
             "" \
@@ -211,8 +225,6 @@ jobs:
             "" \
             "Local changes: patches applied from patches if present." \
             > release_notes.txt
-
-          git fetch origin --prune
 
           if git show-ref --verify --quiet "refs/heads/${release_branch}"; then
             git branch -f "${release_branch}" HEAD
