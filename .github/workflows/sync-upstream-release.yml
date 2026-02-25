@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -53,8 +57,8 @@ jobs:
           set -euo pipefail
 
           get_latest_matching_tag() {
-            owner_repo="$1"
-            jq_filter="$2"
+            local owner_repo="$1"
+            local jq_filter="$2"
             gh api "repos/${owner_repo}/tags?per_page=100" --jq "$jq_filter"
           }
 
@@ -67,9 +71,9 @@ jobs:
             '[.[].name | select(test("^v?[0-9]+\\.[0-9]+\\.[0-9]+$"))][0] // empty')"
 
           if [ -z "$vk_tag" ] || [ -z "$gl_tag" ]; then
-            echo Failed to find version-number tags
-            echo Vulkan-Headers: "$vk_tag"
-            echo glslang: "$gl_tag"
+            echo "Failed to find version-number tags"
+            echo "Vulkan-Headers: $vk_tag"
+            echo "glslang: $gl_tag"
             exit 1
           fi
 
@@ -99,7 +103,7 @@ jobs:
           if [ -z "$use_gl" ]; then use_gl="$last_gl"; fi
 
           if [ -z "$use_vk" ] || [ -z "$use_gl" ]; then
-            echo Could not determine release versions
+            echo "Could not determine release versions"
             exit 1
           fi
 
@@ -137,15 +141,14 @@ jobs:
           release_ref="${{ steps.plan.outputs.release_ref }}"
 
           if [ ! -f CMakeLists.txt ]; then
-            echo CMakeLists.txt not found
+            echo "CMakeLists.txt not found"
             exit 1
           fi
 
-          # Update project(... VERSION X.Y.Z) to match Vulkan-Headers version (vk_ver)
           if grep -Eq '^[[:space:]]*project\([[:space:]]*vk-dynamic\b' CMakeLists.txt; then
             perl -0777 -i -pe "s/(project\\(\\s*vk-dynamic\\b[^\\)]*\\bVERSION\\s+)[0-9]+\\.[0-9]+\\.[0-9]+/\\1${vk_ver}/s" CMakeLists.txt
           else
-            echo project(vk-dynamic ...) line not found
+            echo "project(vk-dynamic ...) line not found"
             exit 1
           fi
 
@@ -154,13 +157,13 @@ jobs:
             git commit -m "Fix CMake project VERSION for ${release_ref}"
             git push origin "refs/heads/$release_ref:refs/heads/$release_ref"
           else
-            echo CMakeLists project VERSION already correct, doing nothing
+            echo "CMakeLists project VERSION already correct, doing nothing"
           fi
 
       - name: Stop after CMake correction when branch exists
         if: steps.branchcheck.outputs.exists == 'true'
         run: |
-          echo Release branch already exists, no vendor or release work performed
+          echo "Release branch already exists, no vendor or release work performed"
 
       - name: Checkout base for sync (last tag if present)
         if: steps.branchcheck.outputs.exists != 'true'
@@ -186,12 +189,12 @@ jobs:
 
           src_dir=$(find "$tmp" -maxdepth 1 -type d -name "Vulkan-Headers-*" | head -n 1)
           if [ -z "$src_dir" ]; then
-            echo Expected Vulkan-Headers source directory not found
+            echo "Expected Vulkan-Headers source directory not found"
             exit 1
           fi
 
           if [ ! -d "$src_dir/include/vulkan" ] || [ ! -d "$src_dir/include/vk_video" ]; then
-            echo Expected include/vulkan or include/vk_video not found in Vulkan-Headers tarball
+            echo "Expected include/vulkan or include/vk_video not found in Vulkan-Headers tarball"
             exit 1
           fi
 
@@ -215,47 +218,26 @@ jobs:
 
           src_dir=$(find "$tmp" -maxdepth 1 -type d -name "glslang-*" | head -n 1)
           if [ -z "$src_dir" ]; then
-            echo Expected glslang source directory not found
+            echo "Expected glslang source directory not found"
             exit 1
           fi
 
-          dirs_needed=(
-            CInterface
-            ExtensionHeaders
-            GenericCodeGen
-            HLSL
-            Include
-            MachineIndependent
-            OSDependent
-            Public
-            ResourceLimits
-          )
-
-          files_needed=(
-            CMakeLists.txt
-            stub.cpp
-            updateGrammar
-          )
+          dirs_needed="CInterface ExtensionHeaders GenericCodeGen HLSL Include MachineIndependent OSDependent Public ResourceLimits"
+          files_needed="CMakeLists.txt stub.cpp updateGrammar"
 
           is_base_ok() {
-            base="$1"
-            for d in "${dirs_needed[@]}"; do
+            local base="$1"
+            for d in $dirs_needed; do
               [ -d "$base/$d" ] || return 1
             done
-            for f in "${files_needed[@]}"; do
+            for f in $files_needed; do
               [ -e "$base/$f" ] || return 1
             done
             return 0
           }
 
           base=""
-          candidates=(
-            "$src_dir/glslang/glslang"
-            "$src_dir/glslang"
-            "$src_dir"
-          )
-
-          for c in "${candidates[@]}"; do
+          for c in "$src_dir/glslang/glslang" "$src_dir/glslang" "$src_dir"; do
             if [ -d "$c" ] && is_base_ok "$c"; then
               base="$c"
               break
@@ -273,14 +255,14 @@ jobs:
           fi
 
           if [ -z "$base" ]; then
-            echo Could not locate glslang base directory containing the expected subtree
+            echo "Could not locate glslang base directory containing the expected subtree"
             exit 1
           fi
 
           rm -rf include/glslang/glslang
           mkdir -p include/glslang/glslang
 
-          for d in "${dirs_needed[@]}"; do
+          for d in $dirs_needed; do
             rsync -a --delete "$base/$d/" "include/glslang/glslang/$d/"
           done
 
@@ -296,14 +278,14 @@ jobs:
           vk_ver="${{ steps.plan.outputs.use_vk }}"
 
           if [ ! -f CMakeLists.txt ]; then
-            echo CMakeLists.txt not found
+            echo "CMakeLists.txt not found"
             exit 1
           fi
 
           if grep -Eq '^[[:space:]]*project\([[:space:]]*vk-dynamic\b' CMakeLists.txt; then
             perl -0777 -i -pe "s/(project\\(\\s*vk-dynamic\\b[^\\)]*\\bVERSION\\s+)[0-9]+\\.[0-9]+\\.[0-9]+/\\1${vk_ver}/s" CMakeLists.txt
           else
-            echo project(vk-dynamic ...) line not found
+            echo "project(vk-dynamic ...) line not found"
             exit 1
           fi
 
@@ -314,7 +296,7 @@ jobs:
           if ls patches/*.patch >/dev/null 2>&1; then
             git am --3way patches/*.patch
           else
-            echo No patches found, skipping
+            echo "No patches found, skipping"
           fi
 
       - name: Commit changes on versioned release branch
@@ -332,7 +314,7 @@ jobs:
             git add -A
             git commit -m "Sync Vulkan-Headers ${vk_tag} and glslang ${gl_tag}"
           else
-            echo No changes to commit
+            echo "No changes to commit"
           fi
 
           git push -f origin "refs/heads/$release_ref:refs/heads/$release_ref"
@@ -374,7 +356,7 @@ jobs:
           fi
 
           if gh release view "$release_ref" >/dev/null 2>&1; then
-            echo Release already exists
+            echo "Release already exists"
             exit 0
           fi
 
