@@ -128,13 +128,12 @@ jobs:
           release_ref="${{ steps.plan.outputs.release_ref }}"
           git checkout -B "$release_ref" "origin/$release_ref"
 
-      - name: If release branch exists, ensure CMake versioning is correct and push if needed
+      - name: If release branch exists, ensure CMake project VERSION is correct and push if needed
         if: steps.branchcheck.outputs.exists == 'true'
         run: |
           set -euo pipefail
 
           vk_ver="${{ steps.plan.outputs.use_vk }}"
-          gl_ver="${{ steps.plan.outputs.use_gl }}"
           release_ref="${{ steps.plan.outputs.release_ref }}"
 
           if [ ! -f CMakeLists.txt ]; then
@@ -142,28 +141,20 @@ jobs:
             exit 1
           fi
 
-          perl -0777 -i -pe "s/(project\\(\\s*vk-dynamic\\b[^\\)]*\\bVERSION\\s+)[0-9]+\\.[0-9]+\\.[0-9]+/\\1${vk_ver}/s" CMakeLists.txt
-
-          if grep -q 'VK_DYNAMIC_VULKAN_HEADERS_VERSION' CMakeLists.txt; then
-            perl -0777 -i -pe "s/set\\(\\s*VK_DYNAMIC_VULKAN_HEADERS_VERSION\\s+\\\"?[^\\\"\\)]+\\\"?\\s*\\)/set(VK_DYNAMIC_VULKAN_HEADERS_VERSION \"${vk_ver}\")/s" CMakeLists.txt
-          fi
-          if grep -q 'VK_DYNAMIC_GLSLANG_VERSION' CMakeLists.txt; then
-            perl -0777 -i -pe "s/set\\(\\s*VK_DYNAMIC_GLSLANG_VERSION\\s+\\\"?[^\\\"\\)]+\\\"?\\s*\\)/set(VK_DYNAMIC_GLSLANG_VERSION \"${gl_ver}\")/s" CMakeLists.txt
-          fi
-          if grep -q 'VK_DYNAMIC_RELEASE_REF' CMakeLists.txt; then
-            perl -0777 -i -pe "s/set\\(\\s*VK_DYNAMIC_RELEASE_REF\\s+\\\"?[^\\\"\\)]+\\\"?\\s*\\)/set(VK_DYNAMIC_RELEASE_REF \"${release_ref}\")/s" CMakeLists.txt
-          fi
-
-          if ! grep -q 'VK_DYNAMIC_VULKAN_HEADERS_VERSION' CMakeLists.txt; then
-            perl -0777 -i -pe "s/(project\\([^\\)]*\\)\\s*)/\\1\\nset(VK_DYNAMIC_VULKAN_HEADERS_VERSION \"${vk_ver}\")\\nset(VK_DYNAMIC_GLSLANG_VERSION \"${gl_ver}\")\\nset(VK_DYNAMIC_RELEASE_REF \"${release_ref}\")\\n/s" CMakeLists.txt
+          # Update project(... VERSION X.Y.Z) to match Vulkan-Headers version (vk_ver)
+          if grep -Eq '^[[:space:]]*project\([[:space:]]*vk-dynamic\b' CMakeLists.txt; then
+            perl -0777 -i -pe "s/(project\\(\\s*vk-dynamic\\b[^\\)]*\\bVERSION\\s+)[0-9]+\\.[0-9]+\\.[0-9]+/\\1${vk_ver}/s" CMakeLists.txt
+          else
+            echo project(vk-dynamic ...) line not found
+            exit 1
           fi
 
           if git status --porcelain | grep -q .; then
             git add CMakeLists.txt
-            git commit -m "Fix CMake versioning for ${release_ref}"
-            git push origin "$release_ref"
+            git commit -m "Fix CMake project VERSION for ${release_ref}"
+            git push origin "refs/heads/$release_ref:refs/heads/$release_ref"
           else
-            echo CMakeLists already correct, doing nothing
+            echo CMakeLists project VERSION already correct, doing nothing
           fi
 
       - name: Stop after CMake correction when branch exists
@@ -297,34 +288,23 @@ jobs:
           install -m 0644 "$base/stub.cpp" "include/glslang/glslang/stub.cpp"
           install -m 0755 "$base/updateGrammar" "include/glslang/glslang/updateGrammar"
 
-      - name: Update CMakeLists.txt versioning
+      - name: Update CMake project VERSION to match Vulkan-Headers version
         if: steps.branchcheck.outputs.exists != 'true'
         run: |
           set -euo pipefail
 
           vk_ver="${{ steps.plan.outputs.use_vk }}"
-          gl_ver="${{ steps.plan.outputs.use_gl }}"
-          release_ref="${{ steps.plan.outputs.release_ref }}"
 
           if [ ! -f CMakeLists.txt ]; then
             echo CMakeLists.txt not found
             exit 1
           fi
 
-          perl -0777 -i -pe "s/(project\\(\\s*vk-dynamic\\b[^\\)]*\\bVERSION\\s+)[0-9]+\\.[0-9]+\\.[0-9]+/\\1${vk_ver}/s" CMakeLists.txt
-
-          if grep -q 'VK_DYNAMIC_VULKAN_HEADERS_VERSION' CMakeLists.txt; then
-            perl -0777 -i -pe "s/set\\(\\s*VK_DYNAMIC_VULKAN_HEADERS_VERSION\\s+\\\"?[^\\\"\\)]+\\\"?\\s*\\)/set(VK_DYNAMIC_VULKAN_HEADERS_VERSION \"${vk_ver}\")/s" CMakeLists.txt
-          fi
-          if grep -q 'VK_DYNAMIC_GLSLANG_VERSION' CMakeLists.txt; then
-            perl -0777 -i -pe "s/set\\(\\s*VK_DYNAMIC_GLSLANG_VERSION\\s+\\\"?[^\\\"\\)]+\\\"?\\s*\\)/set(VK_DYNAMIC_GLSLANG_VERSION \"${gl_ver}\")/s" CMakeLists.txt
-          fi
-          if grep -q 'VK_DYNAMIC_RELEASE_REF' CMakeLists.txt; then
-            perl -0777 -i -pe "s/set\\(\\s*VK_DYNAMIC_RELEASE_REF\\s+\\\"?[^\\\"\\)]+\\\"?\\s*\\)/set(VK_DYNAMIC_RELEASE_REF \"${release_ref}\")/s" CMakeLists.txt
-          fi
-
-          if ! grep -q 'VK_DYNAMIC_VULKAN_HEADERS_VERSION' CMakeLists.txt; then
-            perl -0777 -i -pe "s/(project\\([^\\)]*\\)\\s*)/\\1\\nset(VK_DYNAMIC_VULKAN_HEADERS_VERSION \"${vk_ver}\")\\nset(VK_DYNAMIC_GLSLANG_VERSION \"${gl_ver}\")\\nset(VK_DYNAMIC_RELEASE_REF \"${release_ref}\")\\n/s" CMakeLists.txt
+          if grep -Eq '^[[:space:]]*project\([[:space:]]*vk-dynamic\b' CMakeLists.txt; then
+            perl -0777 -i -pe "s/(project\\(\\s*vk-dynamic\\b[^\\)]*\\bVERSION\\s+)[0-9]+\\.[0-9]+\\.[0-9]+/\\1${vk_ver}/s" CMakeLists.txt
+          else
+            echo project(vk-dynamic ...) line not found
+            exit 1
           fi
 
       - name: Reapply local patches if present
@@ -355,7 +335,7 @@ jobs:
             echo No changes to commit
           fi
 
-          git push -f origin "$release_ref"
+          git push -f origin "refs/heads/$release_ref:refs/heads/$release_ref"
 
       - name: Create tag and GitHub Release vVK-GL
         if: steps.branchcheck.outputs.exists != 'true'
@@ -386,12 +366,11 @@ jobs:
             "" \
             "CMake updated:" \
             "project VERSION set to Vulkan-Headers version" \
-            "VK_DYNAMIC_VULKAN_HEADERS_VERSION, VK_DYNAMIC_GLSLANG_VERSION, VK_DYNAMIC_RELEASE_REF set" \
             > release_notes.txt
 
           if ! git rev-parse "$release_ref" >/dev/null 2>&1; then
             git tag -a "$release_ref" -m "Sync to Vulkan-Headers ${vk_tag} and glslang ${gl_tag}"
-            git push origin "$release_ref"
+            git push origin "refs/tags/$release_ref:refs/tags/$release_ref"
           fi
 
           if gh release view "$release_ref" >/dev/null 2>&1; then
