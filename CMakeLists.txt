@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.15...3.25)
 
-project(vk-dynamic LANGUAGES C VERSION 1.3.290)
+	.4.344.16.2.0)
 
 add_library(vk-dynamic INTERFACE)
 add_library(vk::dynamic ALIAS vk-dynamic)
