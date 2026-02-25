@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.15...3.25)
 
-	.4.344.16.2.0)
+set(VK_DYN_VER "1.3.290" CACHE STRING "vk-dynamic project version")
+
+project(vk-dynamic LANGUAGES C CXX VERSION ${VK_DYN_VER})
 
 add_library(vk-dynamic INTERFACE)
 add_library(vk::dynamic ALIAS vk-dynamic)
