@@ -23,24 +23,17 @@ jobs:
           git config user.name vk-dynamic-sync-bot
           git config user.email actions@users.noreply.github.com
 
-      - name: Read current versions from README
-        id: current
+      - name: Install GitHub CLI
+        uses: cli/cli@v2
+
+      - name: Fetch tags and branches
         run: |
-          cur_vk=$(grep -Eo 'vk-dynamic is currently using version[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+' README.md | head -n 1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' || true)
-          cur_gl=$(grep -Eo 'gslang is bundled with the headers and is using version[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+' README.md | head -n 1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' || true)
-
-          if [ -z "$cur_vk" ] || [ -z "$cur_gl" ]; then
-            echo Failed to parse versions from README.md
-            exit 1
-          fi
-
-          echo "cur_vk=v${cur_vk}" >> "$GITHUB_OUTPUT"
-          echo "cur_gl=${cur_gl}" >> "$GITHUB_OUTPUT"
+          git fetch --tags --force --prune origin +refs/heads/*:refs/remotes/origin/*
 
       - name: Get latest upstream release tags
         id: upstream
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           vk_tag=$(gh api repos/KhronosGroup/Vulkan-Headers/releases/latest --jq .tag_name)
           gl_tag=$(gh api repos/KhronosGroup/glslang/releases/latest --jq .tag_name)
@@ -53,14 +46,33 @@ jobs:
           echo "vk_tag=$vk_tag" >> "$GITHUB_OUTPUT"
           echo "gl_tag=$gl_tag" >> "$GITHUB_OUTPUT"
 
+      - name: Get last local release from tags (fallback to release branches)
+        id: local
+        run: |
+          last_tag=$(git tag -l 'v*' --sort=-v:refname | head -n 1 || true)
+
+          if [ -n "$last_tag" ]; then
+            echo "last_ref=$last_tag" >> "$GITHUB_OUTPUT"
+            echo "source=tag" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          last_branch=$(git branch -r --list 'origin/v*' | sed 's|^[[:space:]]*origin/||' | sort -V | tail -n 1 || true)
+          if [ -n "$last_branch" ]; then
+            echo "last_ref=$last_branch" >> "$GITHUB_OUTPUT"
+            echo "source=branch" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "No prior release tag or release branch found"
+          echo "last_ref=" >> "$GITHUB_OUTPUT"
+          echo "source=none" >> "$GITHUB_OUTPUT"
+
       - name: Decide whether update is needed
         id: decide
         run: |
           update=false
-          if [ "${{ steps.current.outputs.cur_vk }}" != "${{ steps.upstream.outputs.vk_tag }}" ]; then
-            update=true
-          fi
-          if [ "${{ steps.current.outputs.cur_gl }}" != "${{ steps.upstream.outputs.gl_tag }}" ]; then
+          if [ "${{ steps.upstream.outputs.vk_tag }}" != "${{ steps.local.outputs.last_ref }}" ]; then
             update=true
           fi
           echo "update=$update" >> "$GITHUB_OUTPUT"
@@ -68,7 +80,7 @@ jobs:
       - name: Stop if no update is needed
         if: steps.decide.outputs.update != 'true'
         run: |
-          echo No upstream release updates detected
+          echo No upstream Vulkan-Headers release updates detected
 
       - name: Vendor Vulkan-Headers include/vulkan and include/vk_video only
         if: steps.decide.outputs.update == 'true'
@@ -168,14 +180,17 @@ jobs:
             echo No patches found, skipping
           fi
 
-      - name: Update README versions
+      - name: Update README versions (not used for detection)
         if: steps.decide.outputs.update == 'true'
         run: |
           vk_tag="${{ steps.upstream.outputs.vk_tag }}"
           vk_no_v="${vk_tag#v}"
+          gl_tag="${{ steps.upstream.outputs.gl_tag }}"
 
-          perl -0777 -i -pe "s/(vk-dynamic is currently using version )[0-9]+\.[0-9]+\.[0-9]+/\$1${vk_no_v}/" README.md
-          perl -0777 -i -pe "s/(gslang is bundled with the headers and is using version )[0-9]+\.[0-9]+\.[0-9]+/\$1${{ steps.upstream.outputs.gl_tag }}/" README.md
+          if [ -f README.md ]; then
+            perl -0777 -i -pe "s/(vk-dynamic is currently using version )[0-9]+\.[0-9]+\.[0-9]+/\$1${vk_no_v}/" README.md || true
+            perl -0777 -i -pe "s/(gslang is bundled with the headers and is using version )[0-9]+\.[0-9]+\.[0-9]+/\$1${gl_tag}/" README.md || true
+          fi
 
       - name: Commit and push to main
         if: steps.decide.outputs.update == 'true'
@@ -188,17 +203,21 @@ jobs:
             echo No changes to commit
           fi
 
-      - name: Create tag and GitHub Release in this repo
+      - name: Create release branch, tag, and GitHub Release
         if: steps.decide.outputs.update == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           vk_tag="${{ steps.upstream.outputs.vk_tag }}"
           gl_tag="${{ steps.upstream.outputs.gl_tag }}"
+
+          release_branch="${vk_tag}"
           repo_tag="vkheaders-${vk_tag}_glslang-${gl_tag}"
 
           printf "%s\n" \
             "Automated vendor sync to upstream releases." \
+            "" \
+            "Previous release ref: ${{ steps.local.outputs.last_ref }} (source: ${{ steps.local.outputs.source }})" \
             "" \
             "Upstream Vulkan-Headers: ${vk_tag}" \
             "Upstream glslang: ${gl_tag}" \
@@ -210,6 +229,15 @@ jobs:
             "" \
             "Local changes: patches applied from patches if present." \
             > release_notes.txt
+
+          git fetch origin --prune
+
+          if ! git show-ref --verify --quiet "refs/heads/${release_branch}"; then
+            git branch "${release_branch}" HEAD
+          else
+            git branch -f "${release_branch}" HEAD
+          fi
+          git push -f origin "${release_branch}"
 
           if ! git rev-parse "$repo_tag" >/dev/null 2>&1; then
             git tag -a "$repo_tag" -m "Sync to Vulkan-Headers ${vk_tag} and glslang ${gl_tag}"
