@@ -1,7 +1,7 @@
 import os, re, sys
 
 vk_ver = os.environ["VK_VER"]
-gl_ver = os.environ["GL_VER"]
+release_ref = os.environ["RELEASE_REF"]
 
 p = "CMakeLists.txt"
 try:
@@ -17,7 +17,7 @@ rx_tag = re.compile(r'^\s*set\s*\(\s*VK_DYN_TAG\b', re.IGNORECASE)
 rx_min = re.compile(r'^\s*cmake_minimum_required\s*\(', re.IGNORECASE)
 
 set_ver = f'set(VK_DYN_VER "{vk_ver}" CACHE STRING "vk-dynamic project version")\n'
-set_tag = f'set(VK_DYN_TAG "v{vk_ver}-{gl_ver}" CACHE STRING "vk-dynamic release tag")\n'
+set_tag = f'set(VK_DYN_TAG "{release_ref}" CACHE STRING "vk-dynamic release tag")\n'
 
 min_idx = None
 filtered = []
