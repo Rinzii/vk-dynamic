@@ -31,6 +31,12 @@ jobs:
         run: |
           git fetch --tags --force --prune origin +refs/heads/*:refs/remotes/origin/*
 
+      - name: Determine default branch name
+        id: def
+        run: |
+          set -euo pipefail
+          echo "default_branch=${{ github.event.repository.default_branch }}" >> "$GITHUB_OUTPUT"
+
       - name: Get last local release tag (vVK-GL)
         id: local
         run: |
@@ -85,7 +91,7 @@ jobs:
           echo "vk_ver=$vk_ver" >> "$GITHUB_OUTPUT"
           echo "gl_ver=$gl_ver" >> "$GITHUB_OUTPUT"
 
-      - name: Compute release ref vVK-GL
+      - name: Compute release ref vVK-GL and CMake project version
         id: plan
         run: |
           set -euo pipefail
@@ -108,10 +114,12 @@ jobs:
           fi
 
           release_ref="v${use_vk}-${use_gl}"
+          cmake_ver="${use_vk}.${use_gl}"
 
           echo "use_vk=$use_vk" >> "$GITHUB_OUTPUT"
           echo "use_gl=$use_gl" >> "$GITHUB_OUTPUT"
           echo "release_ref=$release_ref" >> "$GITHUB_OUTPUT"
+          echo "cmake_ver=$cmake_ver" >> "$GITHUB_OUTPUT"
 
       - name: Check whether release branch exists on origin
         id: branchcheck
@@ -125,55 +133,60 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: If release branch exists, checkout it (for CMake correction only)
+      - name: If release branch exists, fix CMake project VERSION on both default and release branch
         if: steps.branchcheck.outputs.exists == 'true'
         run: |
           set -euo pipefail
+
+          default_branch="${{ steps.def.outputs.default_branch }}"
           release_ref="${{ steps.plan.outputs.release_ref }}"
+          cmake_ver="${{ steps.plan.outputs.cmake_ver }}"
+
+          fix_cmake_version() {
+            if [ ! -f CMakeLists.txt ]; then
+              echo "CMakeLists.txt not found"
+              exit 1
+            fi
+
+            if grep -Eq '^[[:space:]]*project\([[:space:]]*vk-dynamic\b' CMakeLists.txt; then
+              perl -0777 -i -pe "s/(project\\(\\s*vk-dynamic\\b[^\\)]*\\bVERSION\\s+)[0-9]+\\.[0-9]+\\.[0-9]+/\\1${cmake_ver}/s" CMakeLists.txt
+            else
+              echo "project(vk-dynamic ...) line not found"
+              exit 1
+            fi
+          }
+
           git checkout -B "$release_ref" "origin/$release_ref"
-
-      - name: If release branch exists, ensure CMake project VERSION is correct and push if needed
-        if: steps.branchcheck.outputs.exists == 'true'
-        run: |
-          set -euo pipefail
-
-          vk_ver="${{ steps.plan.outputs.use_vk }}"
-          release_ref="${{ steps.plan.outputs.release_ref }}"
-
-          if [ ! -f CMakeLists.txt ]; then
-            echo "CMakeLists.txt not found"
-            exit 1
-          fi
-
-          if grep -Eq '^[[:space:]]*project\([[:space:]]*vk-dynamic\b' CMakeLists.txt; then
-            perl -0777 -i -pe "s/(project\\(\\s*vk-dynamic\\b[^\\)]*\\bVERSION\\s+)[0-9]+\\.[0-9]+\\.[0-9]+/\\1${vk_ver}/s" CMakeLists.txt
-          else
-            echo "project(vk-dynamic ...) line not found"
-            exit 1
-          fi
-
+          fix_cmake_version
           if git status --porcelain | grep -q .; then
             git add CMakeLists.txt
             git commit -m "Fix CMake project VERSION for ${release_ref}"
             git push origin "refs/heads/$release_ref:refs/heads/$release_ref"
           else
-            echo "CMakeLists project VERSION already correct, doing nothing"
+            echo "Release branch CMake already correct"
           fi
 
-      - name: Stop after CMake correction when branch exists
+          git checkout -B "$default_branch" "origin/$default_branch"
+          fix_cmake_version
+          if git status --porcelain | grep -q .; then
+            git add CMakeLists.txt
+            git commit -m "Fix CMake project VERSION for ${release_ref}"
+            git push origin "refs/heads/$default_branch:refs/heads/$default_branch"
+          else
+            echo "Default branch CMake already correct"
+          fi
+
+      - name: Stop when release branch already exists
         if: steps.branchcheck.outputs.exists == 'true'
         run: |
-          echo "Release branch already exists, no vendor or release work performed"
+          echo "Release branch already exists, only ensured CMake VERSION on both branches"
 
-      - name: Checkout base for sync (last tag if present)
+      - name: Checkout base for sync (default branch)
         if: steps.branchcheck.outputs.exists != 'true'
         run: |
           set -euo pipefail
-          if [ -n "${{ steps.local.outputs.last_tag }}" ]; then
-            git checkout -B sync-work "${{ steps.local.outputs.last_tag }}"
-          else
-            git checkout -B sync-work
-          fi
+          default_branch="${{ steps.def.outputs.default_branch }}"
+          git checkout -B "$default_branch" "origin/$default_branch"
 
       - name: Vendor Vulkan-Headers include/vulkan and include/vk_video only
         if: steps.branchcheck.outputs.exists != 'true'
@@ -270,12 +283,12 @@ jobs:
           install -m 0644 "$base/stub.cpp" "include/glslang/glslang/stub.cpp"
           install -m 0755 "$base/updateGrammar" "include/glslang/glslang/updateGrammar"
 
-      - name: Update CMake project VERSION to match Vulkan-Headers version
+      - name: Update CMake project VERSION to match vVK-GL
         if: steps.branchcheck.outputs.exists != 'true'
         run: |
           set -euo pipefail
 
-          vk_ver="${{ steps.plan.outputs.use_vk }}"
+          cmake_ver="${{ steps.plan.outputs.cmake_ver }}"
 
           if [ ! -f CMakeLists.txt ]; then
             echo "CMakeLists.txt not found"
@@ -283,7 +296,7 @@ jobs:
           fi
 
           if grep -Eq '^[[:space:]]*project\([[:space:]]*vk-dynamic\b' CMakeLists.txt; then
-            perl -0777 -i -pe "s/(project\\(\\s*vk-dynamic\\b[^\\)]*\\bVERSION\\s+)[0-9]+\\.[0-9]+\\.[0-9]+/\\1${vk_ver}/s" CMakeLists.txt
+            perl -0777 -i -pe "s/(project\\(\\s*vk-dynamic\\b[^\\)]*\\bVERSION\\s+)[0-9]+\\.[0-9]+\\.[0-9]+/\\1${cmake_ver}/s" CMakeLists.txt
           else
             echo "project(vk-dynamic ...) line not found"
             exit 1
@@ -299,24 +312,29 @@ jobs:
             echo "No patches found, skipping"
           fi
 
-      - name: Commit changes on versioned release branch
+      - name: Commit and push changes to default branch
         if: steps.branchcheck.outputs.exists != 'true'
         run: |
           set -euo pipefail
 
-          release_ref="${{ steps.plan.outputs.release_ref }}"
+          default_branch="${{ steps.def.outputs.default_branch }}"
           vk_tag="${{ steps.upstream.outputs.vk_tag }}"
           gl_tag="${{ steps.upstream.outputs.gl_tag }}"
-
-          git checkout -B "$release_ref"
 
           if git status --porcelain | grep -q .; then
             git add -A
             git commit -m "Sync Vulkan-Headers ${vk_tag} and glslang ${gl_tag}"
+            git push origin "refs/heads/$default_branch:refs/heads/$default_branch"
           else
-            echo "No changes to commit"
+            echo "No changes to commit on default branch"
           fi
 
+      - name: Create release branch at default branch HEAD and push
+        if: steps.branchcheck.outputs.exists != 'true'
+        run: |
+          set -euo pipefail
+          release_ref="${{ steps.plan.outputs.release_ref }}"
+          git branch -f "$release_ref" HEAD
           git push -f origin "refs/heads/$release_ref:refs/heads/$release_ref"
 
       - name: Create tag and GitHub Release vVK-GL
@@ -331,23 +349,21 @@ jobs:
           gl_tag="${{ steps.upstream.outputs.gl_tag }}"
           last_tag="${{ steps.local.outputs.last_tag }}"
 
+          vk_url="https://github.com/KhronosGroup/Vulkan-Headers/releases/tag/${vk_tag}"
+          gl_url="https://github.com/KhronosGroup/glslang/releases/tag/${gl_tag}"
+
           printf "%s\n" \
-            "Automated vendor sync to upstream versions." \
+            "Automated vendor sync to upstream releases." \
             "" \
             "Previous local release: ${last_tag}" \
             "" \
             "Upstream Vulkan-Headers: ${vk_tag}" \
+            "${vk_url}" \
+            "" \
             "Upstream glslang: ${gl_tag}" \
+            "${gl_url}" \
             "" \
             "Release ref: ${release_ref}" \
-            "" \
-            "Vendored paths updated:" \
-            "include/vulkan" \
-            "include/vk_video" \
-            "include/glslang/glslang with selected items" \
-            "" \
-            "CMake updated:" \
-            "project VERSION set to Vulkan-Headers version" \
             > release_notes.txt
 
           if ! git rev-parse "$release_ref" >/dev/null 2>&1; then
