@@ -108,7 +108,6 @@ jobs:
           import os, re, sys
 
           vk_ver = os.environ["VK_VER"]
-          release_ref = os.environ["RELEASE_REF"]
 
           p = "CMakeLists.txt"
           try:
@@ -124,7 +123,6 @@ jobs:
           rx_min = re.compile(r'^\s*cmake_minimum_required\s*\(', re.IGNORECASE)
 
           set_ver = f'set(VK_DYN_VER "{vk_ver}" CACHE STRING "vk-dynamic project version")\n'
-          set_tag = f'set(VK_DYN_TAG "{release_ref}" CACHE STRING "vk-dynamic release tag")\n'
 
           min_idx = None
           filtered = []
@@ -149,7 +147,6 @@ jobs:
             out.append("\n")
           out.append("\n")
           out.append(set_ver)
-          out.append(set_tag)
           out.append("\n")
           out.extend(filtered[insert_at:])
 
@@ -159,16 +156,15 @@ jobs:
           if set_ver.strip() not in chk:
             print("Failed to set VK_DYN_VER")
             sys.exit(1)
-          if set_tag.strip() not in chk:
-            print("Failed to set VK_DYN_TAG")
+          if "VK_DYN_TAG" in chk:
+            print("VK_DYN_TAG still present, expected it to be removed")
             sys.exit(1)
           PY
 
-      - name: If release branch exists, fix CMake variables on both default and release branch
+      - name: If release branch exists, fix CMake version on both default and release branch
         if: steps.branchcheck.outputs.exists == 'true'
         env:
           VK_VER: ${{ steps.plan.outputs.use_vk }}
-          RELEASE_REF: ${{ steps.plan.outputs.release_ref }}
         run: |
           set -euo pipefail
 
@@ -194,7 +190,7 @@ jobs:
       - name: Stop when release branch already exists
         if: steps.branchcheck.outputs.exists == 'true'
         run: |
-          echo "Release branch already exists, only ensured CMake variables on both branches"
+          echo "Release branch already exists, only ensured CMake version on both branches"
 
       - name: Checkout base for sync (default branch)
         if: steps.branchcheck.outputs.exists != 'true'
@@ -232,11 +228,10 @@ jobs:
           rsync -a --delete "$src_dir/include/vulkan/" "include/vulkan/"
           rsync -a --delete "$src_dir/include/vk_video/" "include/vk_video/"
 
-      - name: Update CMake version variables to match release
+      - name: Update CMake version variable to match release
         if: steps.branchcheck.outputs.exists != 'true'
         env:
           VK_VER: ${{ steps.plan.outputs.use_vk }}
-          RELEASE_REF: ${{ steps.plan.outputs.release_ref }}
         run: |
           set -euo pipefail
           python3 .github_update_cmake.py
