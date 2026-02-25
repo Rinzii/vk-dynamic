@@ -23,9 +23,6 @@ jobs:
           git config user.name vk-dynamic-sync-bot
           git config user.email actions@users.noreply.github.com
 
-      - name: Install GitHub CLI
-        uses: cli/cli@v2
-
       - name: Read current versions from README
         id: current
         run: |
@@ -43,7 +40,7 @@ jobs:
       - name: Get latest upstream release tags
         id: upstream
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           vk_tag=$(gh api repos/KhronosGroup/Vulkan-Headers/releases/latest --jq .tag_name)
           gl_tag=$(gh api repos/KhronosGroup/glslang/releases/latest --jq .tag_name)
@@ -94,14 +91,14 @@ jobs:
             exit 1
           fi
 
-          rm -rf include/vulkan
-          mkdir -p include/vulkan
-          rsync -a --delete "$src_dir/include/vulkan/" "include/vulkan/"
-
           if [ ! -d "$src_dir/include/vk_video" ]; then
             echo Expected include/vk_video not found in Vulkan-Headers tarball
             exit 1
           fi
+
+          rm -rf include/vulkan
+          mkdir -p include/vulkan
+          rsync -a --delete "$src_dir/include/vulkan/" "include/vulkan/"
 
           rm -rf include/vk_video
           mkdir -p include/vk_video
@@ -194,11 +191,25 @@ jobs:
       - name: Create tag and GitHub Release in this repo
         if: steps.decide.outputs.update == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           vk_tag="${{ steps.upstream.outputs.vk_tag }}"
           gl_tag="${{ steps.upstream.outputs.gl_tag }}"
           repo_tag="vkheaders-${vk_tag}_glslang-${gl_tag}"
+
+          printf "%s\n" \
+            "Automated vendor sync to upstream releases." \
+            "" \
+            "Upstream Vulkan-Headers: ${vk_tag}" \
+            "Upstream glslang: ${gl_tag}" \
+            "" \
+            "Vendored paths updated:" \
+            "include/vulkan" \
+            "include/vk_video" \
+            "include/glslang/glslang with selected items" \
+            "" \
+            "Local changes: patches applied from patches if present." \
+            > release_notes.txt
 
           if ! git rev-parse "$repo_tag" >/dev/null 2>&1; then
             git tag -a "$repo_tag" -m "Sync to Vulkan-Headers ${vk_tag} and glslang ${gl_tag}"
@@ -210,8 +221,6 @@ jobs:
             exit 0
           fi
 
-          notes="Automated vendor sync to upstream releases.\n\nUpstream Vulkan-Headers: ${vk_tag}\nUpstream glslang: ${gl_tag}\n\nVendored paths updated:\ninclude/vulkan\ninclude/vk_video\ninclude/glslang/glslang with selected items\n\nLocal changes: patches applied from patches if present."
-
           gh release create "$repo_tag" \
             --title "Vulkan-Headers ${vk_tag} and glslang ${gl_tag}" \
-            --notes "$notes"
+            --notes-file release_notes.txt
