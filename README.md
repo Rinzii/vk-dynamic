@@ -1,12 +1,19 @@
-# QUICKSTART
+# VK Dynamic
 
-Alias for linking to vk-dynamic is `vk::dynamic`
+`vk-dynamic` is a small, vendored helper for using Vulkan-Hpp with dynamic dispatch.
 
-vk-dynamic is currently using version `1.3.290` of the vulkan headers.
-> Older versions of vk-dynamic are in dedicated branches
+## Quickstart
 
-gslang is bundled with the headers and is using version `15.0.0`.
+Link against the CMake alias target:
 
-This does not change any of the normal includes you'd use for vulkan.
+- `vk::dynamic`
 
-This fork is occasionally updated when new major versions of the vulkan headers are released.
+```cmake
+target_link_libraries(your_target PRIVATE vk::dynamic)
+````
+
+Include headers as normal:
+
+```cpp
+#include <vulkan/vulkan.hpp>
+```
