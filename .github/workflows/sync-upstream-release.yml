@@ -91,7 +91,7 @@ jobs:
           echo "vk_ver=$vk_ver" >> "$GITHUB_OUTPUT"
           echo "gl_ver=$gl_ver" >> "$GITHUB_OUTPUT"
 
-      - name: Compute release ref vVK-GL and CMake project version
+      - name: Compute release ref vVK-GL
         id: plan
         run: |
           set -euo pipefail
@@ -114,12 +114,10 @@ jobs:
           fi
 
           release_ref="v${use_vk}-${use_gl}"
-          cmake_ver="${use_vk}.${use_gl}"
 
           echo "use_vk=$use_vk" >> "$GITHUB_OUTPUT"
           echo "use_gl=$use_gl" >> "$GITHUB_OUTPUT"
           echo "release_ref=$release_ref" >> "$GITHUB_OUTPUT"
-          echo "cmake_ver=$cmake_ver" >> "$GITHUB_OUTPUT"
 
       - name: Check whether release branch exists on origin
         id: branchcheck
@@ -133,53 +131,70 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: If release branch exists, fix CMake VERSION on both default and release branch
+      - name: If release branch exists, fix CMake variables on both default and release branch
         if: steps.branchcheck.outputs.exists == 'true'
         run: |
           set -euo pipefail
 
           default_branch="${{ steps.def.outputs.default_branch }}"
           release_ref="${{ steps.plan.outputs.release_ref }}"
-          cmake_ver="${{ steps.plan.outputs.cmake_ver }}"
+          vk_ver="${{ steps.plan.outputs.use_vk }}"
+          gl_ver="${{ steps.plan.outputs.use_gl }}"
 
-          fix_cmake_version() {
+          fix_cmake_vars() {
             if [ ! -f CMakeLists.txt ]; then
               echo "CMakeLists.txt not found"
               exit 1
             fi
 
-            perl -i -pe 's/^[[:space:]]*project\([[:space:]]*vk-dynamic\b.*\)$/project(vk-dynamic LANGUAGES C VERSION '"$cmake_ver"')/m' CMakeLists.txt
+            if ! grep -Eq '^[[:space:]]*cmake_minimum_required\(' CMakeLists.txt; then
+              echo "cmake_minimum_required line not found"
+              exit 1
+            fi
 
-            if ! grep -Eq '^[[:space:]]*project\([[:space:]]*vk-dynamic[[:space:]]+LANGUAGES[[:space:]]+C[[:space:]]+VERSION[[:space:]]+'"$cmake_ver"'\)' CMakeLists.txt; then
-              echo "Failed to update project() line"
+            if grep -Eq '^[[:space:]]*set\(VK_DYN_VER[[:space:]]+' CMakeLists.txt; then
+              perl -i -pe 's/^[[:space:]]*set\(VK_DYN_VER[[:space:]]+.*$/set(VK_DYN_VER "'"$vk_ver"'" CACHE STRING "vk-dynamic project version")/m' CMakeLists.txt
+            else
+              perl -0777 -i -pe 's/(cmake_minimum_required\\([^\\n]*\\)\\n\\n)/$1set(VK_DYN_VER "'"$vk_ver"'" CACHE STRING "vk-dynamic project version")\\n\\n/s' CMakeLists.txt
+            fi
+
+            if grep -Eq '^[[:space:]]*set\(VK_DYN_TAG[[:space:]]+' CMakeLists.txt; then
+              perl -i -pe 's/^[[:space:]]*set\(VK_DYN_TAG[[:space:]]+.*$/set(VK_DYN_TAG "v'"$vk_ver"'-'"$gl_ver"'" CACHE STRING "vk-dynamic release tag")/m' CMakeLists.txt
+            else
+              perl -0777 -i -pe 's/(set\\(VK_DYN_VER[^\\n]*\\)\\n\\n)/$1set(VK_DYN_TAG "v'"$vk_ver"'-'"$gl_ver"'" CACHE STRING "vk-dynamic release tag")\\n\\n/s' CMakeLists.txt
+            fi
+
+            if ! grep -Fq "set(VK_DYN_VER \"${vk_ver}\" CACHE STRING \"vk-dynamic project version\")" CMakeLists.txt; then
+              echo "Failed to set VK_DYN_VER"
+              exit 1
+            fi
+
+            if ! grep -Fq "set(VK_DYN_TAG \"v${vk_ver}-${gl_ver}\" CACHE STRING \"vk-dynamic release tag\")" CMakeLists.txt; then
+              echo "Failed to set VK_DYN_TAG"
               exit 1
             fi
           }
 
           git checkout -B "$release_ref" "origin/$release_ref"
-          fix_cmake_version
+          fix_cmake_vars
           if git status --porcelain | grep -q .; then
             git add CMakeLists.txt
-            git commit -m "Fix CMake project VERSION for ${release_ref}"
+            git commit -m "Fix CMake version variables for ${release_ref}"
             git push origin "refs/heads/$release_ref:refs/heads/$release_ref"
-          else
-            echo "Release branch CMake already correct"
           fi
 
           git checkout -B "$default_branch" "origin/$default_branch"
-          fix_cmake_version
+          fix_cmake_vars
           if git status --porcelain | grep -q .; then
             git add CMakeLists.txt
-            git commit -m "Fix CMake project VERSION for ${release_ref}"
+            git commit -m "Fix CMake version variables for ${release_ref}"
             git push origin "refs/heads/$default_branch:refs/heads/$default_branch"
-          else
-            echo "Default branch CMake already correct"
           fi
 
       - name: Stop when release branch already exists
         if: steps.branchcheck.outputs.exists == 'true'
         run: |
-          echo "Release branch already exists, only ensured CMake VERSION on both branches"
+          echo "Release branch already exists, only ensured CMake variables on both branches"
 
       - name: Checkout base for sync (default branch)
         if: steps.branchcheck.outputs.exists != 'true'
@@ -283,22 +298,38 @@ jobs:
           install -m 0644 "$base/stub.cpp" "include/glslang/glslang/stub.cpp"
           install -m 0755 "$base/updateGrammar" "include/glslang/glslang/updateGrammar"
 
-      - name: Update CMake project VERSION to match vVK-GL
+      - name: Update CMake version variables to match release
         if: steps.branchcheck.outputs.exists != 'true'
         run: |
           set -euo pipefail
 
-          cmake_ver="${{ steps.plan.outputs.cmake_ver }}"
+          vk_ver="${{ steps.plan.outputs.use_vk }}"
+          gl_ver="${{ steps.plan.outputs.use_gl }}"
 
           if [ ! -f CMakeLists.txt ]; then
             echo "CMakeLists.txt not found"
             exit 1
           fi
 
-          perl -i -pe 's/^[[:space:]]*project\([[:space:]]*vk-dynamic\b.*\)$/project(vk-dynamic LANGUAGES C VERSION '"$cmake_ver"')/m' CMakeLists.txt
+          if grep -Eq '^[[:space:]]*set\(VK_DYN_VER[[:space:]]+' CMakeLists.txt; then
+            perl -i -pe 's/^[[:space:]]*set\(VK_DYN_VER[[:space:]]+.*$/set(VK_DYN_VER "'"$vk_ver"'" CACHE STRING "vk-dynamic project version")/m' CMakeLists.txt
+          else
+            perl -0777 -i -pe 's/(cmake_minimum_required\\([^\\n]*\\)\\n\\n)/$1set(VK_DYN_VER "'"$vk_ver"'" CACHE STRING "vk-dynamic project version")\\n\\n/s' CMakeLists.txt
+          fi
 
-          if ! grep -Eq '^[[:space:]]*project\([[:space:]]*vk-dynamic[[:space:]]+LANGUAGES[[:space:]]+C[[:space:]]+VERSION[[:space:]]+'"$cmake_ver"'\)' CMakeLists.txt; then
-            echo "Failed to update project() line"
+          if grep -Eq '^[[:space:]]*set\(VK_DYN_TAG[[:space:]]+' CMakeLists.txt; then
+            perl -i -pe 's/^[[:space:]]*set\(VK_DYN_TAG[[:space:]]+.*$/set(VK_DYN_TAG "v'"$vk_ver"'-'"$gl_ver"'" CACHE STRING "vk-dynamic release tag")/m' CMakeLists.txt
+          else
+            perl -0777 -i -pe 's/(set\\(VK_DYN_VER[^\\n]*\\)\\n\\n)/$1set(VK_DYN_TAG "v'"$vk_ver"'-'"$gl_ver"'" CACHE STRING "vk-dynamic release tag")\\n\\n/s' CMakeLists.txt
+          fi
+
+          if ! grep -Fq "set(VK_DYN_VER \"${vk_ver}\" CACHE STRING \"vk-dynamic project version\")" CMakeLists.txt; then
+            echo "Failed to set VK_DYN_VER"
+            exit 1
+          fi
+
+          if ! grep -Fq "set(VK_DYN_TAG \"v${vk_ver}-${gl_ver}\" CACHE STRING \"vk-dynamic release tag\")" CMakeLists.txt; then
+            echo "Failed to set VK_DYN_TAG"
             exit 1
           fi
 
