@@ -41,7 +41,6 @@ jobs:
         id: local
         run: |
           set -euo pipefail
-
           last_tag=$(git tag -l 'v*' --sort=-v:refname | head -n 1 || true)
           echo "last_tag=$last_tag" >> "$GITHUB_OUTPUT"
 
@@ -124,69 +123,93 @@ jobs:
         run: |
           set -euo pipefail
           release_ref="${{ steps.plan.outputs.release_ref }}"
-
           if git ls-remote --heads origin "$release_ref" | grep -q .; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Helper - update CMake version variables
+        id: cmakehelper
+        run: |
+          cat > .github_update_cmake.py <<'PY'
+          import os, re, sys
+
+          vk_ver = os.environ["VK_VER"]
+          gl_ver = os.environ["GL_VER"]
+
+          p = "CMakeLists.txt"
+          try:
+            txt = open(p, "r", encoding="utf-8").read()
+          except FileNotFoundError:
+            print("CMakeLists.txt not found")
+            sys.exit(1)
+
+          set_ver = f'set(VK_DYN_VER "{vk_ver}" CACHE STRING "vk-dynamic project version")'
+          set_tag = f'set(VK_DYN_TAG "v{vk_ver}-{gl_ver}" CACHE STRING "vk-dynamic release tag")'
+
+          lines = txt.splitlines(True)
+
+          def find_line_idx(rx):
+            r = re.compile(rx)
+            for i, ln in enumerate(lines):
+              if r.match(ln):
+                return i
+            return -1
+
+          i_min = find_line_idx(r'^\s*cmake_minimum_required\s*\(')
+          if i_min < 0:
+            print("cmake_minimum_required line not found")
+            sys.exit(1)
+
+          i_ver = find_line_idx(r'^\s*set\s*\(\s*VK_DYN_VER\b')
+          if i_ver >= 0:
+            nl = "\n" if lines[i_ver].endswith("\n") else ""
+            lines[i_ver] = set_ver + nl
+          else:
+            insert_at = i_min + 1
+            lines.insert(insert_at, "\n" if not lines[i_min].endswith("\n") else "")
+            lines.insert(insert_at + 1, set_ver + "\n")
+            lines.insert(insert_at + 2, "\n")
+
+          i_tag = find_line_idx(r'^\s*set\s*\(\s*VK_DYN_TAG\b')
+          if i_tag >= 0:
+            nl = "\n" if lines[i_tag].endswith("\n") else ""
+            lines[i_tag] = set_tag + nl
+          else:
+            i_ver2 = find_line_idx(r'^\s*set\s*\(\s*VK_DYN_VER\b')
+            insert_at = (i_ver2 + 1) if i_ver2 >= 0 else (i_min + 1)
+            if insert_at < len(lines) and lines[insert_at].strip() != "":
+              lines.insert(insert_at, "\n")
+              insert_at += 1
+            lines.insert(insert_at, set_tag + "\n")
+            lines.insert(insert_at + 1, "\n")
+
+          out = "".join(lines)
+          open(p, "w", encoding="utf-8", newline="").write(out)
+
+          out2 = open(p, "r", encoding="utf-8").read()
+          if set_ver not in out2:
+            print("Failed to set VK_DYN_VER")
+            sys.exit(1)
+          if set_tag not in out2:
+            print("Failed to set VK_DYN_TAG")
+            sys.exit(1)
+          PY
+
       - name: If release branch exists, fix CMake variables on both default and release branch
         if: steps.branchcheck.outputs.exists == 'true'
+        env:
+          VK_VER: ${{ steps.plan.outputs.use_vk }}
+          GL_VER: ${{ steps.plan.outputs.use_gl }}
         run: |
           set -euo pipefail
 
           default_branch="${{ steps.def.outputs.default_branch }}"
           release_ref="${{ steps.plan.outputs.release_ref }}"
-          vk_ver="${{ steps.plan.outputs.use_vk }}"
-          gl_ver="${{ steps.plan.outputs.use_gl }}"
-
-          fix_cmake_vars() {
-            if [ ! -f CMakeLists.txt ]; then
-              echo "CMakeLists.txt not found"
-              exit 1
-            fi
-
-            if ! grep -Eq '^[[:space:]]*cmake_minimum_required\(' CMakeLists.txt; then
-              echo "cmake_minimum_required line not found"
-              exit 1
-            fi
-
-            if grep -Eq '^[[:space:]]*set\(VK_DYN_VER[[:space:]]+' CMakeLists.txt; then
-              perl -i -pe 's/^[[:space:]]*set\(VK_DYN_VER[[:space:]]+.*$/set(VK_DYN_VER "'"$vk_ver"'" CACHE STRING "vk-dynamic project version")/m' CMakeLists.txt
-            else
-              perl -0777 -i -pe 's/(cmake_minimum_required\\([^\\n]*\\)\\n\\n)/$1set(VK_DYN_VER "'"$vk_ver"'" CACHE STRING "vk-dynamic project version")\\n\\n/s' CMakeLists.txt
-            fi
-
-            if grep -Eq '^[[:space:]]*set\(VK_DYN_TAG[[:space:]]+' CMakeLists.txt; then
-              perl -i -pe 's/^[[:space:]]*set\(VK_DYN_TAG[[:space:]]+.*$/set(VK_DYN_TAG "v'"$vk_ver"'-'"$gl_ver"'" CACHE STRING "vk-dynamic release tag")/m' CMakeLists.txt
-            else
-              perl -0777 -i -pe 's/(set\\(VK_DYN_VER[^\\n]*\\)\\n\\n)/$1set(VK_DYN_TAG "v'"$vk_ver"'-'"$gl_ver"'" CACHE STRING "vk-dynamic release tag")\\n\\n/s' CMakeLists.txt
-            fi
-          }
-
-          # corrected: no extra single quotes in the stored tag string
-          perl_fix_tag() {
-            perl -i -pe 's/^[[:space:]]*set\(VK_DYN_TAG[[:space:]]+.*$/set(VK_DYN_TAG "v'"$vk_ver"'-'"$gl_ver"'" CACHE STRING "vk-dynamic release tag")/m' CMakeLists.txt
-          }
 
           git checkout -B "$release_ref" "origin/$release_ref"
-          fix_cmake_vars
-          perl -i -pe 's/^[[:space:]]*set\(VK_DYN_TAG[[:space:]]+.*$/set(VK_DYN_TAG "v'"$vk_ver"'-'"$gl_ver"'" CACHE STRING "vk-dynamic release tag")/m' CMakeLists.txt
-
-          # overwrite with correct VK_DYN_TAG line
-          perl -i -pe 's/^[[:space:]]*set\(VK_DYN_TAG[[:space:]]+.*$/set(VK_DYN_TAG "v'"$vk_ver"'-'"$gl_ver"'" CACHE STRING "vk-dynamic release tag")/m' CMakeLists.txt
-          perl -i -pe 's/set\(VK_DYN_TAG "v'\''?([0-9.]+)'\''?-'\''?([0-9.]+)'\''?" CACHE STRING "vk-dynamic release tag"\)/set(VK_DYN_TAG "v\1-\2" CACHE STRING "vk-dynamic release tag")/m' CMakeLists.txt
-
-          if ! grep -Fq "set(VK_DYN_VER \"${vk_ver}\" CACHE STRING \"vk-dynamic project version\")" CMakeLists.txt; then
-            echo "Failed to set VK_DYN_VER"
-            exit 1
-          fi
-          if ! grep -Fq "set(VK_DYN_TAG \"v${vk_ver}-${gl_ver}\" CACHE STRING \"vk-dynamic release tag\")" CMakeLists.txt; then
-            echo "Failed to set VK_DYN_TAG"
-            exit 1
-          fi
-
+          python3 .github_update_cmake.py
           if git status --porcelain | grep -q .; then
             git add CMakeLists.txt
             git commit -m "Fix CMake version variables for ${release_ref}"
@@ -194,19 +217,7 @@ jobs:
           fi
 
           git checkout -B "$default_branch" "origin/$default_branch"
-          fix_cmake_vars
-          perl -i -pe 's/^[[:space:]]*set\(VK_DYN_TAG[[:space:]]+.*$/set(VK_DYN_TAG "v'"$vk_ver"'-'"$gl_ver"'" CACHE STRING "vk-dynamic release tag")/m' CMakeLists.txt
-          perl -i -pe 's/set\(VK_DYN_TAG "v'\''?([0-9.]+)'\''?-'\''?([0-9.]+)'\''?" CACHE STRING "vk-dynamic release tag"\)/set(VK_DYN_TAG "v\1-\2" CACHE STRING "vk-dynamic release tag")/m' CMakeLists.txt
-
-          if ! grep -Fq "set(VK_DYN_VER \"${vk_ver}\" CACHE STRING \"vk-dynamic project version\")" CMakeLists.txt; then
-            echo "Failed to set VK_DYN_VER"
-            exit 1
-          fi
-          if ! grep -Fq "set(VK_DYN_TAG \"v${vk_ver}-${gl_ver}\" CACHE STRING \"vk-dynamic release tag\")" CMakeLists.txt; then
-            echo "Failed to set VK_DYN_TAG"
-            exit 1
-          fi
-
+          python3 .github_update_cmake.py
           if git status --porcelain | grep -q .; then
             git add CMakeLists.txt
             git commit -m "Fix CMake version variables for ${release_ref}"
@@ -322,40 +333,12 @@ jobs:
 
       - name: Update CMake version variables to match release
         if: steps.branchcheck.outputs.exists != 'true'
+        env:
+          VK_VER: ${{ steps.plan.outputs.use_vk }}
+          GL_VER: ${{ steps.plan.outputs.use_gl }}
         run: |
           set -euo pipefail
-
-          vk_ver="${{ steps.plan.outputs.use_vk }}"
-          gl_ver="${{ steps.plan.outputs.use_gl }}"
-
-          if [ ! -f CMakeLists.txt ]; then
-            echo "CMakeLists.txt not found"
-            exit 1
-          fi
-
-          if grep -Eq '^[[:space:]]*set\(VK_DYN_VER[[:space:]]+' CMakeLists.txt; then
-            perl -i -pe 's/^[[:space:]]*set\(VK_DYN_VER[[:space:]]+.*$/set(VK_DYN_VER "'"$vk_ver"'" CACHE STRING "vk-dynamic project version")/m' CMakeLists.txt
-          else
-            perl -0777 -i -pe 's/(cmake_minimum_required\\([^\\n]*\\)\\n\\n)/$1set(VK_DYN_VER "'"$vk_ver"'" CACHE STRING "vk-dynamic project version")\\n\\n/s' CMakeLists.txt
-          fi
-
-          if grep -Eq '^[[:space:]]*set\(VK_DYN_TAG[[:space:]]+' CMakeLists.txt; then
-            perl -i -pe 's/^[[:space:]]*set\(VK_DYN_TAG[[:space:]]+.*$/set(VK_DYN_TAG "v'"$vk_ver"'-'"$gl_ver"'" CACHE STRING "vk-dynamic release tag")/m' CMakeLists.txt
-          else
-            perl -0777 -i -pe 's/(set\\(VK_DYN_VER[^\\n]*\\)\\n\\n)/$1set(VK_DYN_TAG "v'"$vk_ver"'-'"$gl_ver"'" CACHE STRING "vk-dynamic release tag")\\n\\n/s' CMakeLists.txt
-          fi
-
-          perl -i -pe 's/set\(VK_DYN_TAG "v'\''?([0-9.]+)'\''?-'\''?([0-9.]+)'\''?" CACHE STRING "vk-dynamic release tag"\)/set(VK_DYN_TAG "v\1-\2" CACHE STRING "vk-dynamic release tag")/m' CMakeLists.txt
-
-          if ! grep -Fq "set(VK_DYN_VER \"${vk_ver}\" CACHE STRING \"vk-dynamic project version\")" CMakeLists.txt; then
-            echo "Failed to set VK_DYN_VER"
-            exit 1
-          fi
-
-          if ! grep -Fq "set(VK_DYN_TAG \"v${vk_ver}-${gl_ver}\" CACHE STRING \"vk-dynamic release tag\")" CMakeLists.txt; then
-            echo "Failed to set VK_DYN_TAG"
-            exit 1
-          fi
+          python3 .github_update_cmake.py
 
       - name: Reapply local patches if present
         if: steps.branchcheck.outputs.exists != 'true'
@@ -421,7 +404,7 @@ jobs:
             "Release ref: ${release_ref}" \
             > release_notes.txt
 
-          if ! git rev-parse "$release_ref" >/dev/null 2>&1; then
+          if ! git show-ref --verify --quiet "refs/tags/$release_ref"; then
             git tag -a "$release_ref" -m "Sync to Vulkan-Headers ${vk_tag} and glslang ${gl_tag}"
             git push origin "refs/tags/$release_ref:refs/tags/$release_ref"
           fi
