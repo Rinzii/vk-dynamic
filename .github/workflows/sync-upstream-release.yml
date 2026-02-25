@@ -61,8 +61,16 @@ jobs:
           vk_tag="$(latest_from_releases_or_tags "KhronosGroup/Vulkan-Headers")" || { echo Failed to fetch Vulkan-Headers tag; exit 1; }
           gl_tag="$(latest_from_releases_or_tags "KhronosGroup/glslang")" || { echo Failed to fetch glslang tag; exit 1; }
 
+          vk_ver="${vk_tag#v}"
+          gl_ver="${gl_tag#v}"
+
+          release_ref="v${vk_ver}-${gl_ver}"
+
           echo "vk_tag=$vk_tag" >> "$GITHUB_OUTPUT"
           echo "gl_tag=$gl_tag" >> "$GITHUB_OUTPUT"
+          echo "vk_ver=$vk_ver" >> "$GITHUB_OUTPUT"
+          echo "gl_ver=$gl_ver" >> "$GITHUB_OUTPUT"
+          echo "release_ref=$release_ref" >> "$GITHUB_OUTPUT"
 
       - name: Decide whether update is needed
         id: decide
@@ -70,7 +78,7 @@ jobs:
           update=false
           if [ -z "${{ steps.local.outputs.last_tag }}" ]; then
             update=true
-          elif [ "${{ steps.upstream.outputs.vk_tag }}" != "${{ steps.local.outputs.last_tag }}" ]; then
+          elif [ "${{ steps.upstream.outputs.release_ref }}" != "${{ steps.local.outputs.last_tag }}" ]; then
             update=true
           fi
           echo "update=$update" >> "$GITHUB_OUTPUT"
@@ -78,7 +86,7 @@ jobs:
       - name: Stop if no update is needed
         if: steps.decide.outputs.update != 'true'
         run: |
-          echo No upstream Vulkan-Headers tag updates detected
+          echo No upstream version updates detected
 
       - name: Vendor Vulkan-Headers include/vulkan and include/vk_video only
         if: steps.decide.outputs.update == 'true'
@@ -134,15 +142,7 @@ jobs:
             exit 1
           fi
 
-          if [ ! -d "$src_dir/glslang/glslang" ]; then
-            echo Expected glslang/glslang not found in glslang tarball
-            exit 1
-          fi
-
-          rm -rf include/glslang/glslang
-          mkdir -p include/glslang/glslang
-
-          dirs=(
+          dirs_needed=(
             CInterface
             ExtensionHeaders
             GenericCodeGen
@@ -154,24 +154,64 @@ jobs:
             ResourceLimits
           )
 
-          for d in "${dirs[@]}"; do
-            if [ ! -d "$src_dir/glslang/glslang/$d" ]; then
-              echo Missing expected directory glslang/glslang/$d
-              exit 1
+          files_needed=(
+            CMakeLists.txt
+            stub.cpp
+            updateGrammar
+          )
+
+          is_base_ok() {
+            base="$1"
+            for d in "${dirs_needed[@]}"; do
+              [ -d "$base/$d" ] || return 1
+            done
+            for f in "${files_needed[@]}"; do
+              [ -e "$base/$f" ] || return 1
+            done
+            return 0
+          }
+
+          base=""
+          candidates=(
+            "$src_dir/glslang/glslang"
+            "$src_dir/glslang"
+            "$src_dir"
+          )
+
+          for c in "${candidates[@]}"; do
+            if [ -n "$c" ] && [ -d "$c" ] && is_base_ok "$c"; then
+              base="$c"
+              break
             fi
-            rsync -a --delete "$src_dir/glslang/glslang/$d/" "include/glslang/glslang/$d/"
           done
 
-          for f in CMakeLists.txt stub.cpp updateGrammar; do
-            if [ ! -e "$src_dir/glslang/glslang/$f" ]; then
-              echo Missing expected file glslang/glslang/$f
-              exit 1
+          if [ -z "$base" ]; then
+            found_ci="$(find "$src_dir" -maxdepth 4 -type d -name CInterface | head -n 1 || true)"
+            if [ -n "$found_ci" ]; then
+              maybe_base="$(dirname "$found_ci")"
+              if is_base_ok "$maybe_base"; then
+                base="$maybe_base"
+              fi
             fi
+          fi
+
+          if [ -z "$base" ]; then
+            echo Could not locate glslang base directory containing the expected subtree
+            echo "Searched candidates:"
+            printf "  %s\n" "${candidates[@]}"
+            exit 1
+          fi
+
+          rm -rf include/glslang/glslang
+          mkdir -p include/glslang/glslang
+
+          for d in "${dirs_needed[@]}"; do
+            rsync -a --delete "$base/$d/" "include/glslang/glslang/$d/"
           done
 
-          install -m 0644 "$src_dir/glslang/glslang/CMakeLists.txt" "include/glslang/glslang/CMakeLists.txt"
-          install -m 0644 "$src_dir/glslang/glslang/stub.cpp" "include/glslang/glslang/stub.cpp"
-          install -m 0755 "$src_dir/glslang/glslang/updateGrammar" "include/glslang/glslang/updateGrammar"
+          install -m 0644 "$base/CMakeLists.txt" "include/glslang/glslang/CMakeLists.txt"
+          install -m 0644 "$base/stub.cpp" "include/glslang/glslang/stub.cpp"
+          install -m 0755 "$base/updateGrammar" "include/glslang/glslang/updateGrammar"
 
       - name: Reapply local patches if present
         if: steps.decide.outputs.update == 'true'
@@ -205,10 +245,13 @@ jobs:
 
           vk_tag="${{ steps.upstream.outputs.vk_tag }}"
           gl_tag="${{ steps.upstream.outputs.gl_tag }}"
+          vk_ver="${{ steps.upstream.outputs.vk_ver }}"
+          gl_ver="${{ steps.upstream.outputs.gl_ver }}"
           last_tag="${{ steps.local.outputs.last_tag }}"
+          release_ref="${{ steps.upstream.outputs.release_ref }}"
 
-          release_branch="${vk_tag}"
-          repo_tag="${vk_tag}"
+          release_branch="${release_ref}"
+          repo_tag="${release_ref}"
 
           printf "%s\n" \
             "Automated vendor sync to upstream versions." \
@@ -217,6 +260,8 @@ jobs:
             "" \
             "Upstream Vulkan-Headers: ${vk_tag}" \
             "Upstream glslang: ${gl_tag}" \
+            "" \
+            "Release ref: ${release_ref}" \
             "" \
             "Vendored paths updated:" \
             "include/vulkan" \
