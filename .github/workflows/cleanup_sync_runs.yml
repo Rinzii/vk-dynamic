@@ -31,6 +31,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SYNC_WORKFLOW_NAME: Sync upstream Vulkan-Headers and publish release
+          BUILD_WORKFLOW_NAME: Build and compile-test
           CLEANUP_WORKFLOW_NAME: Cleanup old workflow runs
         run: |
           set -euo pipefail
@@ -50,7 +51,7 @@ jobs:
             wf_id="$(resolve_wf_id_by_name "$wf_name" || true)"
             if [ -z "${wf_id:-}" ]; then
               echo "Could not find workflow with name: ${wf_name}"
-              echo "Make sure SYNC_WORKFLOW_NAME and CLEANUP_WORKFLOW_NAME exactly match the workflow name fields."
+              echo "Make sure workflow names exactly match the workflow name fields."
               return 1
             fi
 
@@ -84,4 +85,5 @@ jobs:
           }
 
           delete_all_but_latest_by_name "${SYNC_WORKFLOW_NAME}"
+          delete_all_but_latest_by_name "${BUILD_WORKFLOW_NAME}"
           delete_all_but_latest_by_name "${CLEANUP_WORKFLOW_NAME}"
