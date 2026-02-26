@@ -3,7 +3,7 @@ name: Cleanup old workflow runs
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 14 * * 1"
+    - cron: "0 14 * * 1" # weekly; bi-weekly gate below
 
 permissions:
   actions: write
@@ -35,15 +35,23 @@ jobs:
         run: |
           set -euo pipefail
 
-          repo="$GITHUB_REPOSITORY"
+          repo="${GITHUB_REPOSITORY}"
 
-          delete_all_but_latest() {
+          resolve_wf_id_by_path_suffix() {
+            local want_file="$1"
+            gh api "repos/${repo}/actions/workflows?per_page=100" \
+              --jq ".workflows[] | select(.path | endswith(\"/${want_file}\")) | .id" \
+              | head -n 1
+          }
+
+          delete_all_but_latest_by_file() {
             local workflow_file="$1"
 
             local wf_id
-            wf_id="$(gh api "repos/${repo}/actions/workflows/${workflow_file}" --jq '.id')"
-            if [ -z "${wf_id:-}" ] || [ "${wf_id}" = "null" ]; then
-              echo "Could not resolve workflow id for ${workflow_file}"
+            wf_id="$(resolve_wf_id_by_path_suffix "$workflow_file" || true)"
+            if [ -z "${wf_id:-}" ]; then
+              echo "Could not find workflow with path ending in /${workflow_file}"
+              echo "Check the filename under .github/workflows/ exactly matches."
               return 1
             fi
 
@@ -76,5 +84,5 @@ jobs:
             done <<< "${delete_ids}"
           }
 
-          delete_all_but_latest "${SYNC_WORKFLOW_FILE}"
-          delete_all_but_latest "${CLEANUP_WORKFLOW_FILE}"
+          delete_all_but_latest_by_file "${SYNC_WORKFLOW_FILE}"
+          delete_all_but_latest_by_file "${CLEANUP_WORKFLOW_FILE}"
