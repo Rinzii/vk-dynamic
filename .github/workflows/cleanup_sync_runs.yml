@@ -30,35 +30,34 @@ jobs:
       - name: Delete all but most recent run of selected workflows
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SYNC_WORKFLOW_FILE: sync_upstream_vulkan_headers.yml
-          CLEANUP_WORKFLOW_FILE: cleanup_sync_runs.yml
+          SYNC_WORKFLOW_NAME: Sync upstream Vulkan-Headers and publish release
+          CLEANUP_WORKFLOW_NAME: Cleanup old workflow runs
         run: |
           set -euo pipefail
-
           repo="${GITHUB_REPOSITORY}"
 
-          resolve_wf_id_by_path_suffix() {
-            local want_file="$1"
+          resolve_wf_id_by_name() {
+            local want_name="$1"
             gh api "repos/${repo}/actions/workflows?per_page=100" \
-              --jq ".workflows[] | select(.path | endswith(\"/${want_file}\")) | .id" \
+              --jq ".workflows[] | select(.name == \"${want_name}\") | .id" \
               | head -n 1
           }
 
-          delete_all_but_latest_by_file() {
-            local workflow_file="$1"
+          delete_all_but_latest_by_name() {
+            local wf_name="$1"
 
             local wf_id
-            wf_id="$(resolve_wf_id_by_path_suffix "$workflow_file" || true)"
+            wf_id="$(resolve_wf_id_by_name "$wf_name" || true)"
             if [ -z "${wf_id:-}" ]; then
-              echo "Could not find workflow with path ending in /${workflow_file}"
-              echo "Check the filename under .github/workflows/ exactly matches."
+              echo "Could not find workflow with name: ${wf_name}"
+              echo "Make sure SYNC_WORKFLOW_NAME and CLEANUP_WORKFLOW_NAME exactly match the workflow name fields."
               return 1
             fi
 
             local keep_id
             keep_id="$(gh api "repos/${repo}/actions/workflows/${wf_id}/runs?per_page=100" --jq '.workflow_runs[0].id // empty')"
             if [ -z "${keep_id:-}" ]; then
-              echo "No workflow runs found for ${workflow_file}. Nothing to do."
+              echo "No workflow runs found for ${wf_name}. Nothing to do."
               return 0
             fi
 
@@ -66,11 +65,11 @@ jobs:
             delete_ids="$(gh api "repos/${repo}/actions/workflows/${wf_id}/runs?per_page=100" \
               --jq ".workflow_runs[] | select(.id != ${keep_id}) | select(.status == \"completed\") | .id")"
 
-            echo "Workflow: ${workflow_file}"
+            echo "Workflow: ${wf_name}"
             echo "Keeping most recent run id: ${keep_id}"
 
             if [ -z "${delete_ids:-}" ]; then
-              echo "Nothing to delete for ${workflow_file}."
+              echo "Nothing to delete for ${wf_name}."
               return 0
             fi
 
@@ -84,5 +83,5 @@ jobs:
             done <<< "${delete_ids}"
           }
 
-          delete_all_but_latest_by_file "${SYNC_WORKFLOW_FILE}"
-          delete_all_but_latest_by_file "${CLEANUP_WORKFLOW_FILE}"
+          delete_all_but_latest_by_name "${SYNC_WORKFLOW_NAME}"
+          delete_all_but_latest_by_name "${CLEANUP_WORKFLOW_NAME}"

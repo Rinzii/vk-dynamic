@@ -1,87 +1,301 @@
-name: Cleanup old workflow runs
+name: Sync upstream Vulkan-Headers and publish release
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 14 * * 1"
+    - cron: "0 14 * * *"
 
 permissions:
-  actions: write
-  contents: read
+  contents: write
 
 defaults:
   run:
     shell: bash
 
 jobs:
-  cleanup:
+  sync:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Bi-weekly gate (run only on even ISO weeks)
+      - name: Checkout (default branch)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name vk-dynamic-sync-bot
+          git config user.email actions@users.noreply.github.com
+
+      - name: Fetch tags and branches
+        run: |
+          git fetch --tags --force --prune origin +refs/heads/*:refs/remotes/origin/*
+
+      - name: Determine default branch name
+        id: def
         run: |
           set -euo pipefail
-          week="$(date -u +%V)"
-          if [ $((10#$week % 2)) -ne 0 ]; then
-            echo "Odd ISO week ($week). Skipping (bi-weekly gate)."
-            exit 0
-          fi
-          echo "Even ISO week ($week). Continuing."
+          echo "default_branch=${{ github.event.repository.default_branch }}" >> "$GITHUB_OUTPUT"
 
-      - name: Delete all but most recent run of selected workflows
+      - name: Get last local release tag (vX.Y.Z)
+        id: local
+        run: |
+          set -euo pipefail
+          last_tag=$(git tag -l 'v*' --sort=-v:refname | head -n 1 || true)
+          echo "last_tag=$last_tag" >> "$GITHUB_OUTPUT"
+
+          last_vk=""
+          if [ -n "$last_tag" ] && echo "$last_tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            last_vk="${last_tag#v}"
+          fi
+          echo "last_vk=$last_vk" >> "$GITHUB_OUTPUT"
+
+      - name: Get latest upstream Vulkan-Headers version-number tag
+        id: upstream
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SYNC_WORKFLOW_NAME: Sync upstream Vulkan-Headers and publish release
-          CLEANUP_WORKFLOW_NAME: Cleanup old workflow runs
         run: |
           set -euo pipefail
-          repo="${GITHUB_REPOSITORY}"
 
-          resolve_wf_id_by_name() {
-            local want_name="$1"
-            gh api "repos/${repo}/actions/workflows?per_page=100" \
-              --jq ".workflows[] | select(.name == \"${want_name}\") | .id" \
-              | head -n 1
-          }
+          vk_tag="$(gh api "repos/KhronosGroup/Vulkan-Headers/tags?per_page=100" \
+            --jq '[.[].name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))][0] // empty')"
 
-          delete_all_but_latest_by_name() {
-            local wf_name="$1"
+          if [ -z "$vk_tag" ]; then
+            echo "Failed to find Vulkan-Headers version-number tag"
+            exit 1
+          fi
 
-            local wf_id
-            wf_id="$(resolve_wf_id_by_name "$wf_name" || true)"
-            if [ -z "${wf_id:-}" ]; then
-              echo "Could not find workflow with name: ${wf_name}"
-              echo "Fix SYNC_WORKFLOW_NAME and CLEANUP_WORKFLOW_NAME to exactly match the workflow name fields."
-              return 1
-            fi
+          vk_ver="${vk_tag#v}"
 
-            local keep_id
-            keep_id="$(gh api "repos/${repo}/actions/workflows/${wf_id}/runs?per_page=100" --jq '.workflow_runs[0].id // empty')"
-            if [ -z "${keep_id:-}" ]; then
-              echo "No workflow runs found for ${wf_name}. Nothing to do."
-              return 0
-            fi
+          echo "vk_tag=$vk_tag" >> "$GITHUB_OUTPUT"
+          echo "vk_ver=$vk_ver" >> "$GITHUB_OUTPUT"
 
-            local delete_ids
-            delete_ids="$(gh api "repos/${repo}/actions/workflows/${wf_id}/runs?per_page=100" \
-              --jq ".workflow_runs[] | select(.id != ${keep_id}) | select(.status == \"completed\") | .id")"
+      - name: Compute release ref vX.Y.Z
+        id: plan
+        run: |
+          set -euo pipefail
 
-            echo "Workflow: ${wf_name}"
-            echo "Keeping most recent run id: ${keep_id}"
+          last_vk="${{ steps.local.outputs.last_vk }}"
+          up_vk="${{ steps.upstream.outputs.vk_ver }}"
 
-            if [ -z "${delete_ids:-}" ]; then
-              echo "Nothing to delete for ${wf_name}."
-              return 0
-            fi
+          use_vk="$up_vk"
+          if [ -z "$use_vk" ]; then use_vk="$last_vk"; fi
 
-            echo "Deleting completed run ids:"
-            echo "${delete_ids}"
+          if [ -z "$use_vk" ]; then
+            echo "Could not determine release version"
+            exit 1
+          fi
 
-            while IFS= read -r run_id; do
-              [ -n "$run_id" ] || continue
-              gh api -X DELETE "repos/${repo}/actions/runs/${run_id}"
-              echo "Deleted run ${run_id}"
-            done <<< "${delete_ids}"
-          }
+          release_ref="v${use_vk}"
 
-          delete_all_but_latest_by_name "${SYNC_WORKFLOW_NAME}"
-          delete_all_but_latest_by_name "${CLEANUP_WORKFLOW_NAME}"
+          echo "use_vk=$use_vk" >> "$GITHUB_OUTPUT"
+          echo "release_ref=$release_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether release branch exists on origin
+        id: branchcheck
+        run: |
+          set -euo pipefail
+          release_ref="${{ steps.plan.outputs.release_ref }}"
+          if git ls-remote --heads origin "$release_ref" | grep -q .; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ensure scripts/github_update_cmake.py exists (repo file)
+        run: |
+          set -euo pipefail
+          mkdir -p scripts
+          cat > scripts/github_update_cmake.py <<'PY'
+          import os, re, sys
+
+          vk_ver = os.environ["VK_VER"]
+
+          p = "CMakeLists.txt"
+          try:
+            txt = open(p, "r", encoding="utf-8").read()
+          except FileNotFoundError:
+            print("CMakeLists.txt not found")
+            sys.exit(1)
+
+          lines = txt.splitlines(True)
+
+          rx_ver = re.compile(r'^\s*set\s*\(\s*VK_DYN_VER\b', re.IGNORECASE)
+          rx_tag = re.compile(r'^\s*set\s*\(\s*VK_DYN_TAG\b', re.IGNORECASE)
+          rx_min = re.compile(r'^\s*cmake_minimum_required\s*\(', re.IGNORECASE)
+
+          set_ver = f'set(VK_DYN_VER "{vk_ver}" CACHE STRING "vk-dynamic project version")\n'
+
+          min_idx = None
+          filtered = []
+          for ln in lines:
+            if min_idx is None and rx_min.match(ln):
+              min_idx = len(filtered)
+            if rx_ver.match(ln) or rx_tag.match(ln):
+              continue
+            filtered.append(ln)
+
+          if min_idx is None:
+            print("cmake_minimum_required line not found")
+            sys.exit(1)
+
+          insert_at = min_idx + 1
+          while insert_at < len(filtered) and filtered[insert_at].strip() == "":
+            insert_at += 1
+
+          out = []
+          out.extend(filtered[:min_idx + 1])
+          if not filtered[min_idx].endswith("\n"):
+            out.append("\n")
+          out.append("\n")
+          out.append(set_ver)
+          out.append("\n")
+          out.extend(filtered[insert_at:])
+
+          open(p, "w", encoding="utf-8", newline="").write("".join(out))
+
+          chk = open(p, "r", encoding="utf-8").read()
+          if set_ver.strip() not in chk:
+            print("Failed to set VK_DYN_VER")
+            sys.exit(1)
+          if "VK_DYN_TAG" in chk:
+            print("VK_DYN_TAG still present, expected it to be removed")
+            sys.exit(1)
+          PY
+
+      - name: If release branch exists, fix CMake version on both default and release branch
+        if: steps.branchcheck.outputs.exists == 'true'
+        env:
+          VK_VER: ${{ steps.plan.outputs.use_vk }}
+        run: |
+          set -euo pipefail
+
+          default_branch="${{ steps.def.outputs.default_branch }}"
+          release_ref="${{ steps.plan.outputs.release_ref }}"
+
+          git checkout -B "$release_ref" "origin/$release_ref"
+          python3 scripts/github_update_cmake.py
+          if git status --porcelain | grep -q .; then
+            git add CMakeLists.txt scripts/github_update_cmake.py
+            git commit -m "Fix CMake version for ${release_ref}"
+            git push origin "refs/heads/$release_ref:refs/heads/$release_ref"
+          fi
+
+          git checkout -B "$default_branch" "origin/$default_branch"
+          python3 scripts/github_update_cmake.py
+          if git status --porcelain | grep -q .; then
+            git add CMakeLists.txt scripts/github_update_cmake.py
+            git commit -m "Fix CMake version for ${release_ref}"
+            git push origin "refs/heads/$default_branch:refs/heads/$default_branch"
+          fi
+
+      - name: Stop when release branch already exists
+        if: steps.branchcheck.outputs.exists == 'true'
+        run: |
+          echo "Release branch already exists, only ensured CMake version on both branches"
+
+      - name: Checkout base for sync (default branch)
+        if: steps.branchcheck.outputs.exists != 'true'
+        run: |
+          set -euo pipefail
+          default_branch="${{ steps.def.outputs.default_branch }}"
+          git checkout -B "$default_branch" "origin/$default_branch"
+
+      - name: Vendor Vulkan-Headers include/vulkan and include/vk_video only
+        if: steps.branchcheck.outputs.exists != 'true'
+        run: |
+          set -euo pipefail
+
+          vk_tag="${{ steps.upstream.outputs.vk_tag }}"
+          url="https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/${vk_tag}.tar.gz"
+
+          tmp=$(mktemp -d)
+          curl -L "$url" -o "$tmp/vkheaders.tgz"
+          tar -xzf "$tmp/vkheaders.tgz" -C "$tmp"
+
+          src_dir=$(find "$tmp" -maxdepth 1 -type d -name "Vulkan-Headers-*" | head -n 1)
+          if [ -z "$src_dir" ]; then
+            echo "Expected Vulkan-Headers source directory not found"
+            exit 1
+          fi
+
+          if [ ! -d "$src_dir/include/vulkan" ] || [ ! -d "$src_dir/include/vk_video" ]; then
+            echo "Expected include/vulkan or include/vk_video not found in Vulkan-Headers tarball"
+            exit 1
+          fi
+
+          rm -rf include/vulkan include/vk_video
+          mkdir -p include/vulkan include/vk_video
+
+          rsync -a --delete "$src_dir/include/vulkan/" "include/vulkan/"
+          rsync -a --delete "$src_dir/include/vk_video/" "include/vk_video/"
+
+      - name: Update CMake version variable to match release
+        if: steps.branchcheck.outputs.exists != 'true'
+        env:
+          VK_VER: ${{ steps.plan.outputs.use_vk }}
+        run: |
+          set -euo pipefail
+          python3 scripts/github_update_cmake.py
+
+      - name: Commit and push changes to default branch
+        if: steps.branchcheck.outputs.exists != 'true'
+        run: |
+          set -euo pipefail
+
+          default_branch="${{ steps.def.outputs.default_branch }}"
+          vk_tag="${{ steps.upstream.outputs.vk_tag }}"
+
+          if git status --porcelain | grep -q .; then
+            git add -A
+            git commit -m "Sync Vulkan-Headers ${vk_tag}"
+            git push origin "refs/heads/$default_branch:refs/heads/$default_branch"
+          else
+            echo "No changes to commit on default branch"
+          fi
+
+      - name: Create release branch at default branch HEAD and push
+        if: steps.branchcheck.outputs.exists != 'true'
+        run: |
+          set -euo pipefail
+          release_ref="${{ steps.plan.outputs.release_ref }}"
+          git branch -f "$release_ref" HEAD
+          git push -f origin "refs/heads/$release_ref:refs/heads/$release_ref"
+
+      - name: Create tag and GitHub Release vX.Y.Z
+        if: steps.branchcheck.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          release_ref="${{ steps.plan.outputs.release_ref }}"
+          vk_tag="${{ steps.upstream.outputs.vk_tag }}"
+          last_tag="${{ steps.local.outputs.last_tag }}"
+
+          vk_url="https://github.com/KhronosGroup/Vulkan-Headers/releases/tag/${vk_tag}"
+
+          printf "%s\n" \
+            "Automated vendor sync to upstream releases." \
+            "" \
+            "Previous local release: ${last_tag}" \
+            "" \
+            "Upstream Vulkan-Headers: ${vk_tag}" \
+            "${vk_url}" \
+            "" \
+            "Release ref: ${release_ref}" \
+            > release_notes.txt
+
+          if ! git show-ref --verify --quiet "refs/tags/$release_ref"; then
+            git tag -a "$release_ref" -m "Sync to Vulkan-Headers ${vk_tag}"
+            git push origin "refs/tags/$release_ref:refs/tags/$release_ref"
+          fi
+
+          if gh release view "$release_ref" >/dev/null 2>&1; then
+            echo "Release already exists"
+            exit 0
+          fi
+
+          gh release create "$release_ref" \
+            --title "Vulkan-Headers ${vk_tag}" \
+            --notes-file release_notes.txt
