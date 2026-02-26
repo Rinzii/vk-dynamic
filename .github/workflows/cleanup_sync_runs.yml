@@ -1,0 +1,69 @@
+name: Cleanup old sync workflow runs
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 14 * * 1" # weekly; script below makes it bi-weekly
+
+permissions:
+  actions: write
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Bi-weekly gate (run only on even ISO weeks)
+        run: |
+          set -euo pipefail
+          week="$(date -u +%V)"
+          if [ $((10#$week % 2)) -ne 0 ]; then
+            echo "Odd ISO week ($week). Skipping (bi-weekly gate)."
+            exit 0
+          fi
+          echo "Even ISO week ($week). Continuing."
+
+      - name: Delete all but most recent run of the sync workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SYNC_WORKFLOW_FILE: sync_upstream_vulkan_headers.yml
+        run: |
+          set -euo pipefail
+
+          repo="$GITHUB_REPOSITORY"
+
+          # Resolve workflow id from the file name in .github/workflows/
+          wf_id="$(gh api "repos/${repo}/actions/workflows/${SYNC_WORKFLOW_FILE}" --jq '.id')"
+          if [ -z "${wf_id:-}" ] || [ "${wf_id}" = "null" ]; then
+            echo "Could not resolve workflow id for ${SYNC_WORKFLOW_FILE}"
+            echo "Set SYNC_WORKFLOW_FILE to the exact filename of your sync workflow in .github/workflows/"
+            exit 1
+          fi
+
+          # Get the newest run id (keep it), and list the other completed run ids (delete them).
+          keep_id="$(gh api "repos/${repo}/actions/workflows/${wf_id}/runs?per_page=100" --jq '.workflow_runs[0].id // empty')"
+          if [ -z "${keep_id:-}" ]; then
+            echo "No workflow runs found for ${SYNC_WORKFLOW_FILE}. Nothing to do."
+            exit 0
+          fi
+
+          delete_ids="$(gh api "repos/${repo}/actions/workflows/${wf_id}/runs?per_page=100" --jq ".workflow_runs[] | select(.id != ${keep_id}) | select(.status == \"completed\") | .id")"
+
+          if [ -z "${delete_ids:-}" ]; then
+            echo "Nothing to delete. Keeping most recent run id ${keep_id}."
+            exit 0
+          fi
+
+          echo "Keeping most recent run id: ${keep_id}"
+          echo "Deleting completed run ids:"
+          echo "${delete_ids}"
+
+          while IFS= read -r run_id; do
+            [ -n "$run_id" ] || continue
+            gh api -X DELETE "repos/${repo}/actions/runs/${run_id}"
+            echo "Deleted run ${run_id}"
+          done <<< "${delete_ids}"
