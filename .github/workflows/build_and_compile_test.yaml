@@ -1,0 +1,84 @@
+name: Build and compile-test
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure (default options)
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build (default options)
+        run: |
+          set -euo pipefail
+          cmake --build build --config Release
+
+      - name: Configure (disable Vulkan-Hpp dynamic dispatch support)
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-nohpp -DCMAKE_BUILD_TYPE=Release -DVK_DYNAMIC_ENABLE_HPP_DYNAMIC_DISPATCH=OFF
+
+      - name: Build (disable Vulkan-Hpp dynamic dispatch support)
+        run: |
+          set -euo pipefail
+          cmake --build build-nohpp --config Release
+
+      - name: Consumer compile test (links vk::dynamic_hpp_dispatch when enabled)
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os, pathlib
+
+          root = pathlib.Path.cwd()
+          d = root / "consumer-test"
+          d.mkdir(exist_ok=True)
+
+          (d / "main.cpp").write_text(
+              "#include <vulkan/vulkan.hpp>\n"
+              "int main() { return 0; }\n",
+              encoding="utf-8",
+              newline="\n",
+          )
+
+          (d / "CMakeLists.txt").write_text(
+              "cmake_minimum_required(VERSION 3.15)\n"
+              "project(vk_dynamic_consumer LANGUAGES CXX)\n"
+              "add_subdirectory(.. vk_dynamic_src)\n"
+              "add_executable(consumer main.cpp)\n"
+              "if(TARGET vk::dynamic_hpp_dispatch)\n"
+              "  target_link_libraries(consumer PRIVATE vk::dynamic_hpp_dispatch)\n"
+              "else()\n"
+              "  target_link_libraries(consumer PRIVATE vk::dynamic)\n"
+              "endif()\n",
+              encoding="utf-8",
+              newline="\n",
+          )
+          PY
+
+          cmake -S consumer-test -B consumer-test-build -DCMAKE_BUILD_TYPE=Release
+          cmake --build consumer-test-build --config Release
