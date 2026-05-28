@@ -102,68 +102,7 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Ensure scripts/github_update_cmake.py exists (repo file)
-        run: |
-          set -euo pipefail
-          mkdir -p scripts
-          cat > scripts/github_update_cmake.py <<'PY'
-          import os, re, sys
-
-          vk_ver = os.environ["VK_VER"]
-
-          p = "CMakeLists.txt"
-          try:
-            txt = open(p, "r", encoding="utf-8").read()
-          except FileNotFoundError:
-            print("CMakeLists.txt not found")
-            sys.exit(1)
-
-          lines = txt.splitlines(True)
-
-          rx_ver = re.compile(r'^\s*set\s*\(\s*VK_DYN_VER\b', re.IGNORECASE)
-          rx_tag = re.compile(r'^\s*set\s*\(\s*VK_DYN_TAG\b', re.IGNORECASE)
-          rx_min = re.compile(r'^\s*cmake_minimum_required\s*\(', re.IGNORECASE)
-
-          set_ver = f'set(VK_DYN_VER "{vk_ver}" CACHE STRING "vk-dynamic project version")\n'
-
-          min_idx = None
-          filtered = []
-          for ln in lines:
-            if min_idx is None and rx_min.match(ln):
-              min_idx = len(filtered)
-            if rx_ver.match(ln) or rx_tag.match(ln):
-              continue
-            filtered.append(ln)
-
-          if min_idx is None:
-            print("cmake_minimum_required line not found")
-            sys.exit(1)
-
-          insert_at = min_idx + 1
-          while insert_at < len(filtered) and filtered[insert_at].strip() == "":
-            insert_at += 1
-
-          out = []
-          out.extend(filtered[:min_idx + 1])
-          if not filtered[min_idx].endswith("\n"):
-            out.append("\n")
-          out.append("\n")
-          out.append(set_ver)
-          out.append("\n")
-          out.extend(filtered[insert_at:])
-
-          open(p, "w", encoding="utf-8", newline="").write("".join(out))
-
-          chk = open(p, "r", encoding="utf-8").read()
-          if set_ver.strip() not in chk:
-            print("Failed to set VK_DYN_VER")
-            sys.exit(1)
-          if "VK_DYN_TAG" in chk:
-            print("VK_DYN_TAG still present, expected it to be removed")
-            sys.exit(1)
-          PY
-
-      - name: If release branch exists, fix CMake version on both default and release branch
+      - name: If release branch exists, fix build metadata on both default and release branch
         if: steps.branchcheck.outputs.exists == 'true'
         env:
           VK_VER: ${{ steps.plan.outputs.use_vk }}
@@ -176,23 +115,23 @@ jobs:
           git checkout -B "$release_ref" "origin/$release_ref"
           python3 scripts/github_update_cmake.py
           if git status --porcelain | grep -q .; then
-            git add CMakeLists.txt scripts/github_update_cmake.py
-            git commit -m "Fix CMake version for ${release_ref}"
+            git add -A
+            git commit -m "Fix build metadata for ${release_ref}"
             git push origin "refs/heads/$release_ref:refs/heads/$release_ref"
           fi
 
           git checkout -B "$default_branch" "origin/$default_branch"
           python3 scripts/github_update_cmake.py
           if git status --porcelain | grep -q .; then
-            git add CMakeLists.txt scripts/github_update_cmake.py
-            git commit -m "Fix CMake version for ${release_ref}"
+            git add -A
+            git commit -m "Fix build metadata for ${release_ref}"
             git push origin "refs/heads/$default_branch:refs/heads/$default_branch"
           fi
 
       - name: Stop when release branch already exists
         if: steps.branchcheck.outputs.exists == 'true'
         run: |
-          echo "Release branch already exists, only ensured CMake version on both branches"
+          echo "Release branch already exists, only ensured build metadata on both branches"
 
       - name: Checkout base for sync (default branch)
         if: steps.branchcheck.outputs.exists != 'true'
@@ -230,7 +169,7 @@ jobs:
           rsync -a --delete "$src_dir/include/vulkan/" "include/vulkan/"
           rsync -a --delete "$src_dir/include/vk_video/" "include/vk_video/"
 
-      - name: Update CMake version variable to match release
+      - name: Update build metadata to match release
         if: steps.branchcheck.outputs.exists != 'true'
         env:
           VK_VER: ${{ steps.plan.outputs.use_vk }}

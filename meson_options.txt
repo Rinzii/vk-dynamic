@@ -1,0 +1,20 @@
+option(
+  'vk_dynamic_enable_no_prototypes',
+  type: 'boolean',
+  value: true,
+  description: 'Define VK_NO_PROTOTYPES for Vulkan headers'
+)
+
+option(
+  'vk_dynamic_enable_beta_extensions',
+  type: 'boolean',
+  value: true,
+  description: 'Define VK_ENABLE_BETA_EXTENSIONS'
+)
+
+option(
+  'vk_dynamic_enable_hpp_dynamic_dispatch',
+  type: 'boolean',
+  value: true,
+  description: 'Enable Vulkan-Hpp default dynamic dispatch storage and define'
+)
