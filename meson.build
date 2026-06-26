@@ -1,7 +1,7 @@
 project(
   'vk-dynamic',
   ['c', 'cpp'],
-  version: '1.4.354',
+  version: '1.4.355',
   default_options: ['cpp_std=c++17']
 )
 
