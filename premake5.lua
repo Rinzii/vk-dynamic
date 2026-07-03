@@ -1,4 +1,4 @@
-VK_DYN_VER = "1.4.355"
+VK_DYN_VER = "1.4.356"
 
     newoption {
     trigger = "vk-dynamic-no-prototypes",
